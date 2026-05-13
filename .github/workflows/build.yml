@@ -1,12 +1,15 @@
-name: Build Windows EXE
+name: Build Desktop Applications
 
 on:
   push:
     branches:
       - main
 
+permissions:
+  contents: write
+
 jobs:
-  build:
+  build-windows:
     runs-on: windows-latest
 
     steps:
@@ -22,12 +25,53 @@ jobs:
         run: |
           pip install -r requirements.txt
 
-      - name: Build EXE
+      - name: Build Windows EXE
         run: |
           pyinstaller --noconfirm --onefile --windowed --add-binary "ffmpeg.exe;." record_goa.py
 
-      - name: Upload EXE
+      - name: Rename Windows Build
+        run: |
+          mkdir release
+          move dist\record_goa.exe release\SmartTrafficRecorder-Windows.exe
+
+      - name: Upload Windows Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: SmartTrafficRecorder
-          path: dist/*
+          name: SmartTrafficRecorder-Windows
+          path: release/*
+
+  build-macos:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Build macOS App
+        run: |
+          pyinstaller --noconfirm --windowed record_goa.py
+
+      - name: Rename macOS Build
+        run: |
+          mkdir release
+          mv dist/record_goa.app release/SmartTrafficRecorder-Mac.app
+
+      - name: Zip macOS App
+        run: |
+          cd release
+          zip -r SmartTrafficRecorder-Mac.zip SmartTrafficRecorder-Mac.app
+
+      - name: Upload macOS Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SmartTrafficRecorder-Mac
+          path: release/SmartTrafficRecorder-Mac.zip
