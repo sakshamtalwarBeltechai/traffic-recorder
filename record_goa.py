@@ -245,6 +245,31 @@ class RTSPRecorderGUI:
             messagebox.showerror("CSV Loading Error", str(e))
             self.log(f"[ERROR] CSV loading failed: {e}")
 
+    def add_manual_rtsp(self):
+        rtsp_link = self.manual_rtsp.get().strip()
+
+        if not rtsp_link:
+            messagebox.showwarning(
+                "RTSP Required",
+                "Please enter a valid RTSP link."
+            )
+            return
+
+        junction_name = f"Manual_RTSP_{len(self.all_junctions) + 1}"
+
+        self.all_junctions.append({
+            "name": junction_name,
+            "rtsp": rtsp_link
+        })
+
+        self.junction_listbox.insert(tk.END, junction_name)
+
+        self.log(
+            f"[SYSTEM] Manual RTSP stream added successfully: {junction_name}"
+        )
+
+        self.manual_rtsp.set("")
+
     def browse_dir(self):
         path = filedialog.askdirectory()
         if path: self.save_dir.set(path)
@@ -390,27 +415,3 @@ if __name__ == "__main__":
     root = tk.Tk()
     app = RTSPRecorderGUI(root)
     root.mainloop()
-    def add_manual_rtsp(self):
-        rtsp_link = self.manual_rtsp.get().strip()
-
-        if not rtsp_link:
-            messagebox.showwarning(
-                "RTSP Required",
-                "Please enter a valid RTSP link."
-            )
-            return
-
-        junction_name = f"Manual_RTSP_{len(self.all_junctions) + 1}"
-
-        self.all_junctions.append({
-            "name": junction_name,
-            "rtsp": rtsp_link
-        })
-
-        self.junction_listbox.insert(tk.END, junction_name)
-
-        self.log(
-            f"[SYSTEM] Manual RTSP stream added successfully: {junction_name}"
-        )
-
-        self.manual_rtsp.set("")
