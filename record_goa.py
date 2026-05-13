@@ -21,6 +21,8 @@ class RTSPRecorderGUI:
         self.root.title("FFmpeg RTSP Multi-Recorder")
         self.root.geometry("1600x1020")
         self.root.minsize(1350, 850)
+        self.main_canvas = None
+        self.scrollable_frame = None
         self.processes = []
         self.preview_process = None
         self.preview_paused = False
@@ -70,8 +72,108 @@ class RTSPRecorderGUI:
         self.log("[SYSTEM] Ready to load RTSP CSV files and start monitoring.")
 
     def setup_ui(self):
-        title_frame = ttk.Frame(self.root, padding=10)
-        # Make root window scalable
+        # =========================
+        # SCROLLABLE MAIN LAYOUT
+        # =========================
+
+        self.main_canvas = tk.Canvas(
+            self.root,
+            bg="#0f172a",
+            highlightthickness=0
+        )
+
+        vertical_scrollbar = ttk.Scrollbar(
+            self.root,
+            orient="vertical",
+            command=self.main_canvas.yview
+        )
+
+        self.scrollable_frame = ttk.Frame(self.main_canvas)
+
+        self.scrollable_frame.bind(
+            "<Configure>",
+            lambda e: self.main_canvas.configure(
+                scrollregion=self.main_canvas.bbox("all")
+            )
+        )
+
+        self.canvas_window = self.main_canvas.create_window(
+            (0, 0),
+            window=self.scrollable_frame,
+            anchor="nw"
+        )
+
+        self.main_canvas.configure(
+            yscrollcommand=vertical_scrollbar.set
+        )
+
+        self.main_canvas.pack(
+            side="left",
+            fill="both",
+            expand=True
+        )
+        # Force canvas focus so scrolling works globally
+        self.main_canvas.focus_set()
+
+        vertical_scrollbar.pack(
+            side="right",
+            fill="y"
+        )
+
+        # =========================
+        # GLOBAL APP SCROLL SUPPORT
+        # =========================
+
+        def _on_mousewheel(event):
+            try:
+                # macOS trackpad support
+                if sys.platform == 'darwin':
+                    delta = int(-1 * event.delta)
+
+                    if delta == 0:
+                        delta = -1
+
+                    self.main_canvas.yview_scroll(delta, "units")
+
+                # Windows/Linux mouse wheel
+                else:
+                    self.main_canvas.yview_scroll(
+                        int(-1 * (event.delta / 120)),
+                        "units"
+                    )
+
+            except Exception:
+                pass
+
+        def _on_linux_scroll(event):
+            try:
+                if event.num == 4:
+                    self.main_canvas.yview_scroll(-3, "units")
+                elif event.num == 5:
+                    self.main_canvas.yview_scroll(3, "units")
+            except Exception:
+                pass
+
+        # GLOBAL SCROLLING SUPPORT
+        self.root.bind_all("<MouseWheel>", _on_mousewheel, add="+")
+
+        # macOS trackpad horizontal/gesture support
+        self.root.bind_all("<Shift-MouseWheel>", _on_mousewheel, add="+")
+
+        # Linux support
+        self.root.bind_all("<Button-4>", _on_linux_scroll, add="+")
+        self.root.bind_all("<Button-5>", _on_linux_scroll, add="+")
+
+        self.main_canvas.bind(
+            '<Configure>',
+            lambda e: self.main_canvas.itemconfig(
+                self.canvas_window,
+                width=e.width
+            )
+        )
+
+        title_frame = ttk.Frame(self.scrollable_frame, padding=10)
+                # Make root window scalable
         self.root.grid_rowconfigure(0, weight=1)
         self.root.grid_columnconfigure(0, weight=1)
         title_frame.pack(fill="x")
@@ -102,7 +204,7 @@ class RTSPRecorderGUI:
             command=self.show_help_guide
         ).pack(anchor="center", pady=5)
 
-        frame_files = ttk.LabelFrame(self.root, text="CSV Camera Source Management", padding=10)
+        frame_files = ttk.LabelFrame(self.scrollable_frame, text="CSV Camera Source Management", padding=10)
         frame_files.pack(fill="x", padx=10, pady=5)
         frame_files.columnconfigure(1, weight=1)
         frame_files.columnconfigure(2, weight=1)
@@ -149,13 +251,11 @@ class RTSPRecorderGUI:
         ttk.Button(frame_files, text="Browse", command=self.browse_dir).grid(row=3, column=2)
 
         junction_frame = ttk.LabelFrame(
-            self.root,
+            self.scrollable_frame,
             text="Available Traffic Junctions",
-            padding=10,
-            height=180
+            padding=10
         )
-        junction_frame.pack(fill="x", expand=False, padx=10, pady=5)
-        junction_frame.pack_propagate(False)
+        junction_frame.pack(fill="both", expand=False, padx=10, pady=5)
 
         ttk.Label(
             junction_frame,
@@ -186,7 +286,7 @@ class RTSPRecorderGUI:
             command=self.open_live_preview
         ).pack(side="left", padx=5)
 
-        frame_time = ttk.LabelFrame(self.root, text="Recording Schedule", padding=10)
+        frame_time = ttk.LabelFrame(self.scrollable_frame, text="Recording Schedule", padding=10)
         frame_time.pack(fill="x", padx=10, pady=5)
         for col in range(7):
             frame_time.columnconfigure(col, weight=1)
@@ -272,7 +372,7 @@ class RTSPRecorderGUI:
         self.progress.grid(row=1, column=2, columnspan=2, padx=10, pady=10, sticky="w")
 
         # --- Paste Video Recording Quality and Controls/Logs UI here ---
-        frame_ffmpeg = ttk.LabelFrame(self.root, text="Video Recording Quality Settings", padding=10)
+        frame_ffmpeg = ttk.LabelFrame(self.scrollable_frame, text="Video Recording Quality Settings", padding=10)
         frame_ffmpeg.pack(fill="x", padx=10, pady=5)
         for col in range(4):
             frame_ffmpeg.columnconfigure(col, weight=1)
@@ -296,7 +396,7 @@ class RTSPRecorderGUI:
             width=18
         ).grid(row=1, column=1, padx=5, sticky="w")
 
-        frame_controls = ttk.Frame(self.root, padding=10)
+        frame_controls = ttk.Frame(self.scrollable_frame, padding=10)
         frame_controls.pack(fill="x")
 
         self.btn_schedule = ttk.Button(
@@ -325,10 +425,10 @@ class RTSPRecorderGUI:
         # =========================
 
         dashboard_bottom = ttk.PanedWindow(
-        self.root,
-        orient=tk.HORIZONTAL
+            self.scrollable_frame,
+            orient=tk.HORIZONTAL
         )
-        dashboard_bottom.configure(height=420)
+        dashboard_bottom.configure(height=650)
         dashboard_bottom.pack(
             fill="both",
             expand=True,
@@ -345,20 +445,22 @@ class RTSPRecorderGUI:
             padding=10
         )
 
-        dashboard_bottom.add(frame_logs, weight=8)
+        dashboard_bottom.add(frame_logs, weight=7)
 
         self.log_area = scrolledtext.ScrolledText(
             frame_logs,
-            width=70,
-            height=24,
+            width=95,
+            height=34,
             state='disabled',
-            bg="#08111f",
-            fg="#39ff9c",
-            insertbackground="#39ff9c",
+            bg="#111827",
+            fg="#cbd5e1",
+            insertbackground="#cbd5e1",
             relief="flat",
             borderwidth=0,
-            padx=18,
-            pady=18,
+            padx=20,
+            pady=20,
+            highlightthickness=1,
+            highlightbackground="#1e293b",
             font=("Segoe UI", 11)
         )
 
@@ -381,18 +483,20 @@ class RTSPRecorderGUI:
             padding=10
         )
 
-        dashboard_bottom.add(recent_frame, weight=3)
+        dashboard_bottom.add(recent_frame, weight=4)
 
         self.recent_recordings_list = tk.Listbox(
             recent_frame,
-            height=18,
-            width=38,
-            bg="#08111f",
-            fg="#5eead4",
+            height=34,
+            width=50,
+            bg="#111827",
+            fg="#cbd5e1",
             selectbackground="#2563eb",
             selectforeground="white",
             relief="flat",
             borderwidth=0,
+            highlightthickness=1,
+            highlightbackground="#1e293b",
             font=("Segoe UI", 10)
         )
 
@@ -424,11 +528,11 @@ class RTSPRecorderGUI:
         self.refresh_recent_recordings()
 
         footer = ttk.Label(
-            self.root,
+            self.scrollable_frame,
             text="Made by Saksham Talwar | For any problem contact: 7217739614",
-            font=("Arial", 9)
+            font=("Segoe UI", 9)
         )
-        footer.pack(side="bottom", pady=5)
+        footer.pack(side="bottom", pady=8)
     def update_live_clock(self):
         try:
             current_time = datetime.now().strftime(
@@ -1059,15 +1163,15 @@ BUILT FOR:
                 if self.is_windows:
                     process = subprocess.Popen(
                         cmd,
-                        stdout=subprocess.PIPE,
+                        stdout=subprocess.DEVNULL,
                         stderr=subprocess.PIPE,
-                        text=True,
+                        stdin=subprocess.DEVNULL,
                         creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
                     )
                 else:
                     process = subprocess.Popen(
                         cmd,
-                        stdout=subprocess.PIPE,
+                        stdout=subprocess.DEVNULL,
                         stderr=subprocess.PIPE,
                         text=True,
                         preexec_fn=os.setsid
@@ -1083,9 +1187,10 @@ BUILT FOR:
                     )
 
                     continue
-                    self.log(
-                 f"[RECORDING ACTIVE] {junction_name} stream recording successfully."
-                )   
+
+                self.log(
+                    f"[RECORDING ACTIVE] {junction_name} stream recording successfully."
+                )
 
                 self.log(
                     f"[DATA FLOW] Collecting RTSP packets and writing video data..."
