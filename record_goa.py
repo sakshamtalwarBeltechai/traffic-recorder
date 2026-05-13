@@ -75,9 +75,29 @@ class RTSPRecorderGUI:
             command=self.load_junctions
         ).grid(row=1, column=1, pady=10, sticky="w")
 
-        ttk.Label(frame_files, text="Save Recordings To:").grid(row=2, column=0, sticky="w", pady=5)
-        ttk.Entry(frame_files, textvariable=self.save_dir, width=50).grid(row=2, column=1, padx=5)
-        ttk.Button(frame_files, text="Browse", command=self.browse_dir).grid(row=2, column=2)
+        # --- Direct RTSP Link Entry Section ---
+        ttk.Label(
+            frame_files,
+            text="Direct RTSP Link:"
+        ).grid(row=2, column=0, sticky="w", pady=5)
+
+        self.manual_rtsp = tk.StringVar()
+
+        ttk.Entry(
+            frame_files,
+            textvariable=self.manual_rtsp,
+            width=50
+        ).grid(row=2, column=1, padx=5, sticky="w")
+
+        ttk.Button(
+            frame_files,
+            text="Add RTSP Stream",
+            command=self.add_manual_rtsp
+        ).grid(row=2, column=2, padx=5)
+
+        ttk.Label(frame_files, text="Save Recordings To:").grid(row=3, column=0, sticky="w", pady=5)
+        ttk.Entry(frame_files, textvariable=self.save_dir, width=50).grid(row=3, column=1, padx=5)
+        ttk.Button(frame_files, text="Browse", command=self.browse_dir).grid(row=3, column=2)
 
         junction_frame = ttk.LabelFrame(self.root, text="Available Traffic Junctions", padding=10)
         junction_frame.pack(fill="both", expand=False, padx=10, pady=5)
@@ -370,3 +390,27 @@ if __name__ == "__main__":
     root = tk.Tk()
     app = RTSPRecorderGUI(root)
     root.mainloop()
+    def add_manual_rtsp(self):
+        rtsp_link = self.manual_rtsp.get().strip()
+
+        if not rtsp_link:
+            messagebox.showwarning(
+                "RTSP Required",
+                "Please enter a valid RTSP link."
+            )
+            return
+
+        junction_name = f"Manual_RTSP_{len(self.all_junctions) + 1}"
+
+        self.all_junctions.append({
+            "name": junction_name,
+            "rtsp": rtsp_link
+        })
+
+        self.junction_listbox.insert(tk.END, junction_name)
+
+        self.log(
+            f"[SYSTEM] Manual RTSP stream added successfully: {junction_name}"
+        )
+
+        self.manual_rtsp.set("")
