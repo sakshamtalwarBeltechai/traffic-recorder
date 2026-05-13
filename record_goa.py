@@ -1,4 +1,3 @@
-
 import tkinter as tk
 from tkinter import ttk, filedialog, scrolledtext
 from tkinter import messagebox
@@ -11,6 +10,7 @@ from datetime import datetime
 import os
 import signal
 import random
+import sys
 
 class RTSPRecorderGUI:
     def __init__(self, root):
@@ -31,6 +31,18 @@ class RTSPRecorderGUI:
 
         self.all_junctions = []
         self.selected_junctions = []
+
+        self.is_windows = os.name == 'nt'
+
+        if getattr(sys, 'frozen', False):
+            base_path = sys._MEIPASS
+        else:
+            base_path = os.path.dirname(os.path.abspath(__file__))
+
+        self.ffmpeg_path = os.path.join(base_path, 'ffmpeg.exe')
+
+        if not os.path.exists(self.ffmpeg_path):
+            self.ffmpeg_path = 'ffmpeg'
 
         self.setup_ui()
 
@@ -298,13 +310,37 @@ class RTSPRecorderGUI:
             self.active_files.append(filename)
             
             cmd = [
-                "ffmpeg", "-y", "-rtsp_transport", self.transport.get(), 
-                "-i", link, "-t", self.duration.get(),
-                "-c:v", self.codec.get(), "-b:v", self.bitrate.get(), "-an", filename
+                self.ffmpeg_path,
+                "-y",
+                "-rtsp_transport",
+                self.transport.get(),
+                "-i",
+                link,
+                "-t",
+                self.duration.get(),
+                "-c:v",
+                self.codec.get(),
+                "-b:v",
+                self.bitrate.get(),
+                "-an",
+                filename
             ]
             
             try:
-                process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, preexec_fn=os.setsid)
+                if self.is_windows:
+                    process = subprocess.Popen(
+                        cmd,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
+                    )
+                else:
+                    process = subprocess.Popen(
+                        cmd,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        preexec_fn=os.setsid
+                    )
                 self.processes.append(process)
                 self.log(f"[SYSTEM] Recording started successfully for {junction_name}")
             except Exception as e:
@@ -317,8 +353,13 @@ class RTSPRecorderGUI:
         if not self.processes: return
         self.log("[SYSTEM] Sending SIGTERM to terminate hardware encoding safely...")
         for p in self.processes:
-            try: os.killpg(os.getpgid(p.pid), signal.SIGTERM) 
-            except Exception: pass
+            try:
+                if self.is_windows:
+                    p.terminate()
+                else:
+                    os.killpg(os.getpgid(p.pid), signal.SIGTERM)
+            except Exception:
+                pass
         self.processes.clear()
         self.active_files.clear()
         self.is_recording = False
