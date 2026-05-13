@@ -1,5 +1,6 @@
 import tkinter as tk
 from tkinter import ttk, filedialog, scrolledtext
+from tkinter.ttk import Progressbar
 from tkinter import messagebox
 from tkinter import MULTIPLE
 import pandas as pd
@@ -11,6 +12,8 @@ import os
 import signal
 import random
 import sys
+import json
+import shutil
 
 class RTSPRecorderGUI:
     def __init__(self, root):
@@ -20,13 +23,15 @@ class RTSPRecorderGUI:
         self.processes = []
         self.active_files = []
         self.is_recording = False
+        self.recording_end_time = None
+        self.recording_duration_seconds = 0
         
         self.csv_path = tk.StringVar(value="/Users/sakshamtalwar/Beltech_Annotation/Excel_Sheets/RTSP_Goa.csv")
         self.save_dir = tk.StringVar(value=os.path.expanduser("~/Desktop"))
         self.start_time = tk.StringVar(value="13:30")
-        self.duration = tk.StringVar(value="3600")
+        self.duration = tk.StringVar(value="01:00:00")
         if os.name == 'nt':
-            default_codec = 'libx264'
+            default_codec = 'copy'
         else:
             default_codec = 'h264_videotoolbox'
 
@@ -45,6 +50,8 @@ class RTSPRecorderGUI:
             base_path = os.path.dirname(os.path.abspath(__file__))
 
         self.ffmpeg_path = os.path.join(base_path, 'ffmpeg.exe')
+
+        self.config_file = os.path.join(base_path, 'recent_rtsp.json')
 
         if not os.path.exists(self.ffmpeg_path):
             self.ffmpeg_path = 'ffmpeg'
@@ -80,6 +87,7 @@ class RTSPRecorderGUI:
             command=self.load_junctions
         ).grid(row=1, column=1, pady=10, sticky="w")
 
+
         # --- Direct RTSP Link Entry Section ---
         ttk.Label(
             frame_files,
@@ -87,18 +95,25 @@ class RTSPRecorderGUI:
         ).grid(row=2, column=0, sticky="w", pady=5)
 
         self.manual_rtsp = tk.StringVar()
+        self.manual_rtsp_name = tk.StringVar()
+
+        ttk.Entry(
+            frame_files,
+            textvariable=self.manual_rtsp_name,
+            width=20
+        ).grid(row=2, column=1, padx=5, sticky="w")
 
         ttk.Entry(
             frame_files,
             textvariable=self.manual_rtsp,
-            width=50
-        ).grid(row=2, column=1, padx=5, sticky="w")
+            width=35
+        ).grid(row=2, column=2, padx=5, sticky="w")
 
         ttk.Button(
             frame_files,
             text="Add RTSP Stream",
             command=self.add_manual_rtsp
-        ).grid(row=2, column=2, padx=5)
+        ).grid(row=2, column=3, padx=5)
 
         ttk.Label(frame_files, text="Save Recordings To:").grid(row=3, column=0, sticky="w", pady=5)
         ttk.Entry(frame_files, textvariable=self.save_dir, width=50).grid(row=3, column=1, padx=5)
@@ -123,14 +138,149 @@ class RTSPRecorderGUI:
         )
         self.junction_listbox.pack(fill="both", expand=True, pady=5)
 
+        preview_frame = ttk.Frame(junction_frame)
+        preview_frame.pack(fill="x", pady=5)
+
+        ttk.Button(
+            preview_frame,
+            text="Open Live Preview",
+            command=self.open_live_preview
+        ).pack(side="left", padx=5)
+    def save_recent_rtsp(self, name, rtsp):
+        try:
+            recent_data = []
+
+            if os.path.exists(self.config_file):
+                with open(self.config_file, 'r') as f:
+                    recent_data = json.load(f)
+
+            recent_data.append({
+                "name": name,
+                "rtsp": rtsp
+            })
+
+            recent_data = recent_data[-20:]
+
+            with open(self.config_file, 'w') as f:
+                json.dump(recent_data, f, indent=4)
+
+        except Exception as e:
+            self.log(f"[ERROR] Failed saving recent RTSP: {e}")
+
+
+
+    def open_live_preview(self):
+        try:
+            selected_indices = self.junction_listbox.curselection()
+
+            if not selected_indices:
+                messagebox.showwarning(
+                    "No Junction Selected",
+                    "Please select a junction first."
+                )
+                return
+
+            selected_camera = self.all_junctions[selected_indices[0]]
+
+            rtsp_link = selected_camera["rtsp"]
+
+            ffplay_path = shutil.which("ffplay")
+
+            if not ffplay_path:
+                ffplay_path = self.ffmpeg_path.replace("ffmpeg.exe", "ffplay.exe")
+
+            preview_cmd = [
+                ffplay_path,
+                "-rtsp_transport",
+                self.transport.get(),
+                "-fflags",
+                "nobuffer",
+                "-flags",
+                "low_delay",
+                rtsp_link
+            ]
+
+            subprocess.Popen(preview_cmd)
+
+            self.log(
+                f"[SYSTEM] Live preview opened for {selected_camera['name']}"
+            )
+
+        except Exception as e:
+            self.log(f"[ERROR] Live preview failed: {e}")
+
         frame_time = ttk.LabelFrame(self.root, text="Recording Schedule", padding=10)
         frame_time.pack(fill="x", padx=10, pady=5)
 
         ttk.Label(frame_time, text="Start Time (HH:MM):").grid(row=0, column=0, sticky="w")
         ttk.Entry(frame_time, textvariable=self.start_time, width=12).grid(row=0, column=1, sticky="w", padx=5)
 
-        ttk.Label(frame_time, text="Recording Duration (Seconds):").grid(row=0, column=2, sticky="w", padx=10)
+        ttk.Label(frame_time, text="Recording Duration (HH:MM:SS):").grid(row=0, column=2, sticky="w", padx=10)
         ttk.Entry(frame_time, textvariable=self.duration, width=12).grid(row=0, column=3, sticky="w")
+
+        self.timer_label = ttk.Label(
+            frame_time,
+            text="Remaining Time: --:--:--",
+            font=("Arial", 10, "bold")
+        )
+        self.timer_label.grid(row=1, column=0, columnspan=2, pady=10, sticky="w")
+
+        self.progress = Progressbar(
+            frame_time,
+            orient="horizontal",
+            length=300,
+            mode="determinate"
+        )
+        self.progress.grid(row=1, column=2, columnspan=2, padx=10, pady=10, sticky="w")
+    def parse_duration_to_seconds(self, duration_text):
+        try:
+            parts = duration_text.strip().split(':')
+
+            if len(parts) == 3:
+                hours, minutes, seconds = map(int, parts)
+                return hours * 3600 + minutes * 60 + seconds
+
+            elif len(parts) == 2:
+                minutes, seconds = map(int, parts)
+                return minutes * 60 + seconds
+
+            else:
+                return int(duration_text)
+
+        except Exception:
+            return 3600
+
+    def update_recording_timer(self):
+        while self.is_recording and self.recording_end_time:
+            remaining = int(self.recording_end_time - time.time())
+
+            if remaining <= 0:
+                self.timer_label.config(text="Remaining Time: 00:00:00")
+                self.progress['value'] = 100
+
+                self.log("[SYSTEM] Recording duration completed successfully.")
+
+                self.stop_all()
+                break
+
+            hours = remaining // 3600
+            minutes = (remaining % 3600) // 60
+            seconds = remaining % 60
+
+            self.timer_label.config(
+                text=f"Remaining Time: {hours:02}:{minutes:02}:{seconds:02}"
+            )
+
+            elapsed = self.recording_duration_seconds - remaining
+
+            if self.recording_duration_seconds > 0:
+                progress_percent = (
+                    elapsed / self.recording_duration_seconds
+                ) * 100
+
+                self.progress['value'] = progress_percent
+
+            time.sleep(1)
 
         frame_ffmpeg = ttk.LabelFrame(self.root, text="Video Recording Quality Settings", padding=10)
         frame_ffmpeg.pack(fill="x", padx=10, pady=5)
@@ -260,12 +410,19 @@ class RTSPRecorderGUI:
             )
             return
 
-        junction_name = f"Manual_RTSP_{len(self.all_junctions) + 1}"
+        custom_name = self.manual_rtsp_name.get().strip()
+
+        if custom_name:
+            junction_name = custom_name
+        else:
+            junction_name = f"Manual_RTSP_{len(self.all_junctions) + 1}"
 
         self.all_junctions.append({
             "name": junction_name,
             "rtsp": rtsp_link
         })
+
+        self.save_recent_rtsp(junction_name, rtsp_link)
 
         self.junction_listbox.insert(tk.END, junction_name)
 
@@ -274,6 +431,7 @@ class RTSPRecorderGUI:
         )
 
         self.manual_rtsp.set("")
+        self.manual_rtsp_name.set("")
 
     def browse_dir(self):
         path = filedialog.askdirectory()
@@ -325,6 +483,13 @@ class RTSPRecorderGUI:
         self.is_recording = True
         self.log("[SYSTEM] Parsing RTSP CSV coordinates...")
         self.active_files = []
+        self.recording_duration_seconds = self.parse_duration_to_seconds(
+            self.duration.get()
+        )
+
+        self.recording_end_time = time.time() + self.recording_duration_seconds
+
+        self.progress['value'] = 0
         try:
             selected_indices = self.junction_listbox.curselection()
 
@@ -358,7 +523,7 @@ class RTSPRecorderGUI:
                 f"{junction_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4"
             )
             self.active_files.append(filename)
-            
+
             cmd = [
                 self.ffmpeg_path,
                 "-y",
@@ -367,15 +532,31 @@ class RTSPRecorderGUI:
                 "-i",
                 link,
                 "-t",
-                self.duration.get(),
-                "-c:v",
-                self.codec.get(),
-                "-b:v",
-                self.bitrate.get(),
-                "-an",
-                filename
+                str(self.recording_duration_seconds)
             ]
-            
+
+            if self.codec.get() == "copy":
+                cmd.extend([
+                    "-c:v",
+                    "copy"
+                ])
+            else:
+                cmd.extend([
+                    "-c:v",
+                    self.codec.get(),
+                    "-b:v",
+                    self.bitrate.get()
+                ])
+
+            cmd.extend([
+                "-an",
+                "-movflags",
+                "+faststart",
+                "-avoid_negative_ts",
+                "make_zero",
+                filename
+            ])
+
             try:
                 if self.is_windows:
                     process = subprocess.Popen(
@@ -410,6 +591,7 @@ class RTSPRecorderGUI:
 
         self.log("[SYSTEM] Recording engine active. Monitoring streams...")
         threading.Thread(target=self.live_log_updater, daemon=True).start()
+        threading.Thread(target=self.update_recording_timer, daemon=True).start()
 
     def stop_all(self):
         if not self.processes: return
@@ -418,15 +600,21 @@ class RTSPRecorderGUI:
             try:
                 if self.is_windows:
                     p.terminate()
+                    p.wait(timeout=5)
                 else:
                     os.killpg(os.getpgid(p.pid), signal.SIGTERM)
+                    p.wait(timeout=5)
             except Exception:
                 pass
         self.processes.clear()
         self.active_files.clear()
         self.is_recording = False
         self.btn_schedule.config(state="normal")
+        self.timer_label.config(text="Remaining Time: --:--:--")
+        self.progress['value'] = 0
+        self.recording_end_time = None
         self.log("[SYSTEM] Recording processes terminated. Data flushed to disk.")
+
 
 if __name__ == "__main__":
     root = tk.Tk()
