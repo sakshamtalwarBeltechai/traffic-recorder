@@ -57,14 +57,24 @@ class RTSPRecorderGUI:
             base_path = os.path.dirname(os.path.abspath(__file__))
 
         if self.is_windows:
-            self.ffmpeg_path = os.path.join(base_path, 'ffmpeg.exe')
+            bundled_ffmpeg = os.path.join(base_path, 'ffmpeg.exe')
+            bundled_ffplay = os.path.join(base_path, 'ffplay.exe')
+
+            self.ffmpeg_path = bundled_ffmpeg if os.path.exists(bundled_ffmpeg) else 'ffmpeg'
+            self.ffplay_path = bundled_ffplay if os.path.exists(bundled_ffplay) else 'ffplay'
+
         else:
             self.ffmpeg_path = shutil.which('ffmpeg') or 'ffmpeg'
+            self.ffplay_path = shutil.which('ffplay') or 'ffplay'
 
         self.config_file = os.path.join(base_path, 'recent_rtsp.json')
 
-        if self.is_windows and not os.path.exists(self.ffmpeg_path):
-            self.ffmpeg_path = 'ffmpeg'
+        if self.is_windows:
+            if not os.path.exists(self.ffmpeg_path):
+                self.ffmpeg_path = 'ffmpeg'
+
+            if not os.path.exists(self.ffplay_path):
+                self.ffplay_path = 'ffplay'
 
         self.setup_ui()
         self.update_live_clock()
@@ -226,25 +236,18 @@ class RTSPRecorderGUI:
         ).grid(row=2, column=0, sticky="w", pady=5)
 
         self.manual_rtsp = tk.StringVar()
-        self.manual_rtsp_name = tk.StringVar()
-
-        ttk.Entry(
-            frame_files,
-            textvariable=self.manual_rtsp_name,
-            width=20
-        ).grid(row=2, column=1, padx=5, sticky="w")
 
         ttk.Entry(
             frame_files,
             textvariable=self.manual_rtsp,
-            width=35
-        ).grid(row=2, column=2, padx=5, sticky="w")
+            width=70
+        ).grid(row=2, column=1, columnspan=2, padx=5, sticky="ew")
 
         ttk.Button(
             frame_files,
             text="Add RTSP Stream",
             command=self.add_manual_rtsp
-        ).grid(row=2, column=3, padx=5)
+        ).grid(row=2, column=3, padx=10)
 
         ttk.Label(frame_files, text="Save Recordings To:").grid(row=3, column=0, sticky="w", pady=5)
         ttk.Entry(frame_files, textvariable=self.save_dir, width=50).grid(row=3, column=1, padx=5)
@@ -756,18 +759,16 @@ BUILT FOR:
 
             rtsp_link = selected_camera["rtsp"]
 
-            ffplay_path = shutil.which("ffplay")
-
-            if not ffplay_path:
-                ffplay_path = self.ffmpeg_path.replace("ffmpeg.exe", "ffplay.exe")
+            ffplay_path = self.ffplay_path
 
             preview_cmd = [
                 ffplay_path,
                 "-rtsp_transport",
                 self.transport.get(),
                 "-hide_banner",
+                "-nostats",
                 "-loglevel",
-                "quiet",
+                "panic",
                 "-fflags",
                 "nobuffer+discardcorrupt",
                 "-flags",
@@ -972,13 +973,7 @@ BUILT FOR:
             )
             return
 
-        custom_name = self.manual_rtsp_name.get().strip()
-
-# Prevent RTSP URL becoming camera name
-        if custom_name and not custom_name.lower().startswith("rtsp://"):
-            junction_name = custom_name
-        else:
-            junction_name = f"Manual_RTSP_{len(self.all_junctions) + 1}"
+        junction_name = f"Manual_RTSP_{len(self.all_junctions) + 1}"
 
         self.all_junctions.append({
             "name": junction_name,
@@ -994,7 +989,6 @@ BUILT FOR:
         )
 
         self.manual_rtsp.set("")
-        self.manual_rtsp_name.set("")
 
     def browse_dir(self):
         path = filedialog.askdirectory()
@@ -1125,6 +1119,12 @@ BUILT FOR:
                 f"[STREAM] Fetching stream connection for: {junction_name}"
             )
             link = camera_data["rtsp"]
+            # Clean malformed RTSP links from accidental whitespace/newlines
+            link = str(link).strip()
+
+            if not link.lower().startswith("rtsp://"):
+                self.log(f"[ERROR] Invalid RTSP URL detected for {junction_name}")
+                continue
 
             filename = os.path.join(
                 save_directory,
@@ -1137,9 +1137,14 @@ BUILT FOR:
 
             cmd = [
                 self.ffmpeg_path,
-                "-y",
+                "-hide_banner",
+                "-loglevel",
+                "error",
                 "-rtsp_transport",
                 self.transport.get(),
+                "-stimeout",
+                "10000000",
+                "-y",
                 "-i",
                 link,
                 "-t",
@@ -1175,7 +1180,7 @@ BUILT FOR:
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.PIPE,
                         stdin=subprocess.DEVNULL,
-                        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
+                        creationflags=subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
                     )
                 else:
                     process = subprocess.Popen(
@@ -1225,6 +1230,7 @@ BUILT FOR:
 
                 if self.is_windows:
                     p.terminate()
+                    time.sleep(2)
 
                 else:
                     try:
@@ -1234,6 +1240,7 @@ BUILT FOR:
                         )
                     except Exception:
                         p.terminate()
+                        time.sleep(2)
 
                 p.wait(timeout=5)
 
