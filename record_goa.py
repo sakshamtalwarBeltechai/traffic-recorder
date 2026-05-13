@@ -25,7 +25,12 @@ class RTSPRecorderGUI:
         self.save_dir = tk.StringVar(value=os.path.expanduser("~/Desktop"))
         self.start_time = tk.StringVar(value="13:30")
         self.duration = tk.StringVar(value="3600")
-        self.codec = tk.StringVar(value="h264_videotoolbox")
+        if os.name == 'nt':
+            default_codec = 'libx264'
+        else:
+            default_codec = 'h264_videotoolbox'
+
+        self.codec = tk.StringVar(value=default_codec)
         self.bitrate = tk.StringVar(value="1M")
         self.transport = tk.StringVar(value="tcp")
 
@@ -134,7 +139,7 @@ class RTSPRecorderGUI:
         ttk.Combobox(
             frame_ffmpeg,
             textvariable=self.codec,
-            values=["h264_videotoolbox", "libx264", "copy"],
+            values=["libx264", "copy", "h264_videotoolbox"],
             width=18
         ).grid(row=0, column=1, padx=5, sticky="w")
 
@@ -375,23 +380,35 @@ class RTSPRecorderGUI:
                 if self.is_windows:
                     process = subprocess.Popen(
                         cmd,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
                         creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
                     )
                 else:
                     process = subprocess.Popen(
                         cmd,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
                         preexec_fn=os.setsid
                     )
                 self.processes.append(process)
+                time.sleep(2)
+
+                if process.poll() is not None:
+                    error_output = process.stderr.read()
+
+                    self.log(
+                        f"[FFMPEG ERROR] {junction_name}: {error_output}"
+                    )
+
+                    continue
                 self.log(f"[SYSTEM] Recording started successfully for {junction_name}")
             except Exception as e:
                 self.log(f"[ERROR] {junction_name} connection failed: {e}")
 
-        self.log("[SYSTEM] All recording threads active. Initializing live monitor...")
+        self.log("[SYSTEM] Recording engine active. Monitoring streams...")
         threading.Thread(target=self.live_log_updater, daemon=True).start()
 
     def stop_all(self):
