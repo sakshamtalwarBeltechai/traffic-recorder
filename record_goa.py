@@ -974,7 +974,8 @@ BUILT FOR:
 
         custom_name = self.manual_rtsp_name.get().strip()
 
-        if custom_name:
+# Prevent RTSP URL becoming camera name
+        if custom_name and not custom_name.lower().startswith("rtsp://"):
             junction_name = custom_name
         else:
             junction_name = f"Manual_RTSP_{len(self.all_junctions) + 1}"
@@ -1111,7 +1112,15 @@ BUILT FOR:
         os.makedirs(save_directory, exist_ok=True)
 
         for i, camera_data in enumerate(links, 1):
-            junction_name = camera_data["name"].replace(" ", "_")
+            junction_name = str(camera_data["name"])
+
+            # Windows-safe filename cleanup
+            invalid_chars = ['<', '>', ':', '"', '/', '\\', '|', '?', '*']
+
+            for char in invalid_chars:
+                junction_name = junction_name.replace(char, '_')
+
+            junction_name = junction_name.replace(' ', '_')
             self.log(
                 f"[STREAM] Fetching stream connection for: {junction_name}"
             )
@@ -1180,7 +1189,10 @@ BUILT FOR:
                 time.sleep(2)
 
                 if process.poll() is not None:
-                    error_output = process.stderr.read()
+                    try:
+                        error_output = process.stderr.read().decode(errors='ignore')
+                    except Exception:
+                        error_output = str(process.stderr.read())
 
                     self.log(
                         f"[FFMPEG ERROR] {junction_name}: {error_output}"
