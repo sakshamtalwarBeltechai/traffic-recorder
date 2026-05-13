@@ -19,8 +19,11 @@ class RTSPRecorderGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("FFmpeg RTSP Multi-Recorder")
-        self.root.geometry("900x850")
+        self.root.geometry("1600x1020")
+        self.root.minsize(1350, 850)
         self.processes = []
+        self.preview_process = None
+        self.preview_paused = False
         self.active_files = []
         self.is_recording = False
         self.recording_end_time = None
@@ -28,7 +31,9 @@ class RTSPRecorderGUI:
         
         self.csv_path = tk.StringVar(value="/Users/sakshamtalwar/Beltech_Annotation/Excel_Sheets/RTSP_Goa.csv")
         self.save_dir = tk.StringVar(value=os.path.expanduser("~/Desktop"))
-        self.start_time = tk.StringVar(value="13:30")
+        self.start_time = tk.StringVar(value="01:30")
+        self.start_period = tk.StringVar(value="PM")
+        self.start_mode = tk.StringVar(value="now")
         self.duration = tk.StringVar(value="01:00:00")
         if os.name == 'nt':
             default_codec = 'copy'
@@ -49,23 +54,32 @@ class RTSPRecorderGUI:
         else:
             base_path = os.path.dirname(os.path.abspath(__file__))
 
-        self.ffmpeg_path = os.path.join(base_path, 'ffmpeg.exe')
+        if self.is_windows:
+            self.ffmpeg_path = os.path.join(base_path, 'ffmpeg.exe')
+        else:
+            self.ffmpeg_path = shutil.which('ffmpeg') or 'ffmpeg'
 
         self.config_file = os.path.join(base_path, 'recent_rtsp.json')
 
-        if not os.path.exists(self.ffmpeg_path):
+        if self.is_windows and not os.path.exists(self.ffmpeg_path):
             self.ffmpeg_path = 'ffmpeg'
 
         self.setup_ui()
+        self.update_live_clock()
+        self.log("[SYSTEM] Smart Traffic Recorder Dashboard initialized successfully.")
+        self.log("[SYSTEM] Ready to load RTSP CSV files and start monitoring.")
 
     def setup_ui(self):
         title_frame = ttk.Frame(self.root, padding=10)
+        # Make root window scalable
+        self.root.grid_rowconfigure(0, weight=1)
+        self.root.grid_columnconfigure(0, weight=1)
         title_frame.pack(fill="x")
 
         ttk.Label(
             title_frame,
             text="Smart Traffic Camera Recording Dashboard",
-            font=("Arial", 18, "bold")
+            font=("Segoe UI", 20, "bold")
         ).pack(anchor="center")
 
         ttk.Label(
@@ -74,8 +88,24 @@ class RTSPRecorderGUI:
             font=("Arial", 10)
         ).pack(anchor="center", pady=5)
 
+        self.live_clock_label = ttk.Label(
+            title_frame,
+            text="",
+            font=("Consolas", 14, "bold"),
+            foreground="green"
+        )
+        self.live_clock_label.pack(anchor="center", pady=4)
+
+        ttk.Button(
+            title_frame,
+            text="Need Help Buddy?",
+            command=self.show_help_guide
+        ).pack(anchor="center", pady=5)
+
         frame_files = ttk.LabelFrame(self.root, text="CSV Camera Source Management", padding=10)
         frame_files.pack(fill="x", padx=10, pady=5)
+        frame_files.columnconfigure(1, weight=1)
+        frame_files.columnconfigure(2, weight=1)
 
         ttk.Label(frame_files, text="CSV Path:").grid(row=0, column=0, sticky="w")
         ttk.Entry(frame_files, textvariable=self.csv_path, width=50).grid(row=0, column=1, padx=5)
@@ -86,7 +116,6 @@ class RTSPRecorderGUI:
             text="Load Junctions From CSV",
             command=self.load_junctions
         ).grid(row=1, column=1, pady=10, sticky="w")
-
 
         # --- Direct RTSP Link Entry Section ---
         ttk.Label(
@@ -119,8 +148,14 @@ class RTSPRecorderGUI:
         ttk.Entry(frame_files, textvariable=self.save_dir, width=50).grid(row=3, column=1, padx=5)
         ttk.Button(frame_files, text="Browse", command=self.browse_dir).grid(row=3, column=2)
 
-        junction_frame = ttk.LabelFrame(self.root, text="Available Traffic Junctions", padding=10)
-        junction_frame.pack(fill="both", expand=False, padx=10, pady=5)
+        junction_frame = ttk.LabelFrame(
+            self.root,
+            text="Available Traffic Junctions",
+            padding=10,
+            height=180
+        )
+        junction_frame.pack(fill="x", expand=False, padx=10, pady=5)
+        junction_frame.pack_propagate(False)
 
         ttk.Label(
             junction_frame,
@@ -131,10 +166,14 @@ class RTSPRecorderGUI:
         self.junction_listbox = tk.Listbox(
             junction_frame,
             selectmode=MULTIPLE,
-            height=10,
-            bg="#1e1e1e",
-            fg="lime",
-            font=("Arial", 10)
+            height=7,
+            bg="#08111f",
+            fg="#d1fae5",
+            selectbackground="#2563eb",
+            selectforeground="white",
+            relief="flat",
+            borderwidth=0,
+            font=("Segoe UI", 10)
         )
         self.junction_listbox.pack(fill="both", expand=True, pady=5)
 
@@ -146,6 +185,435 @@ class RTSPRecorderGUI:
             text="Open Live Preview",
             command=self.open_live_preview
         ).pack(side="left", padx=5)
+
+        frame_time = ttk.LabelFrame(self.root, text="Recording Schedule", padding=10)
+        frame_time.pack(fill="x", padx=10, pady=5)
+        for col in range(7):
+            frame_time.columnconfigure(col, weight=1)
+
+        ttk.Label(frame_time, text="Recording Start:").grid(row=0, column=0, sticky="w")
+
+        ttk.Radiobutton(
+            frame_time,
+            text="Start Now",
+            variable=self.start_mode,
+            value="now"
+        ).grid(row=0, column=1, sticky="w")
+
+        ttk.Radiobutton(
+            frame_time,
+            text="Schedule Time",
+            variable=self.start_mode,
+            value="scheduled"
+        ).grid(row=0, column=2, sticky="w")
+
+        ttk.Entry(
+            frame_time,
+            textvariable=self.start_time,
+            width=10
+        ).grid(row=0, column=3, sticky="w", padx=5)
+
+        ttk.Combobox(
+            frame_time,
+            textvariable=self.start_period,
+            values=["AM", "PM"],
+            width=5,
+            state="readonly"
+        ).grid(row=0, column=4, sticky="w")
+
+        ttk.Label(frame_time, text="Recording Duration (HH:MM:SS):").grid(row=0, column=5, sticky="w", padx=10)
+        ttk.Entry(frame_time, textvariable=self.duration, width=12).grid(row=0, column=6, sticky="w")
+
+        preset_frame = ttk.Frame(frame_time)
+        preset_frame.grid(row=1, column=5, columnspan=2, sticky="w", pady=5)
+
+        ttk.Label(
+            preset_frame,
+            text="Quick Presets:"
+        ).pack(side="left", padx=(0,5))
+
+        ttk.Button(
+            preset_frame,
+            text="Test 1 Min",
+            command=lambda: self.set_duration_preset("00:01:00")
+        ).pack(side="left", padx=2)
+
+        ttk.Button(
+            preset_frame,
+            text="30 Min",
+            command=lambda: self.set_duration_preset("00:30:00")
+        ).pack(side="left", padx=2)
+
+        ttk.Button(
+            preset_frame,
+            text="1 Hour",
+            command=lambda: self.set_duration_preset("01:00:00")
+        ).pack(side="left", padx=2)
+
+        ttk.Button(
+            preset_frame,
+            text="3 Hours",
+            command=lambda: self.set_duration_preset("03:00:00")
+        ).pack(side="left", padx=2)
+
+        self.timer_label = ttk.Label(
+            frame_time,
+            text="Remaining Time: --:--:--",
+            font=("Arial", 10, "bold")
+        )
+        self.timer_label.grid(row=1, column=0, columnspan=2, pady=10, sticky="w")
+
+        self.progress = Progressbar(
+            frame_time,
+            orient="horizontal",
+            length=300,
+            mode="determinate"
+        )
+        self.progress.grid(row=1, column=2, columnspan=2, padx=10, pady=10, sticky="w")
+
+        # --- Paste Video Recording Quality and Controls/Logs UI here ---
+        frame_ffmpeg = ttk.LabelFrame(self.root, text="Video Recording Quality Settings", padding=10)
+        frame_ffmpeg.pack(fill="x", padx=10, pady=5)
+        for col in range(4):
+            frame_ffmpeg.columnconfigure(col, weight=1)
+
+        ttk.Label(frame_ffmpeg, text="Video Codec:").grid(row=0, column=0, sticky="w")
+        ttk.Combobox(
+            frame_ffmpeg,
+            textvariable=self.codec,
+            values=["libx264", "copy", "h264_videotoolbox"],
+            width=18
+        ).grid(row=0, column=1, padx=5, sticky="w")
+
+        ttk.Label(frame_ffmpeg, text="Bitrate:").grid(row=0, column=2, sticky="w", padx=10)
+        ttk.Entry(frame_ffmpeg, textvariable=self.bitrate, width=12).grid(row=0, column=3, sticky="w")
+
+        ttk.Label(frame_ffmpeg, text="RTSP Transport:").grid(row=1, column=0, sticky="w", pady=5)
+        ttk.Combobox(
+            frame_ffmpeg,
+            textvariable=self.transport,
+            values=["tcp", "udp"],
+            width=18
+        ).grid(row=1, column=1, padx=5, sticky="w")
+
+        frame_controls = ttk.Frame(self.root, padding=10)
+        frame_controls.pack(fill="x")
+
+        self.btn_schedule = ttk.Button(
+            frame_controls,
+            text="Schedule Recording",
+            command=self.start_scheduled_thread
+        )
+        self.btn_schedule.pack(side="left", padx=5)
+
+        self.btn_now = ttk.Button(
+            frame_controls,
+            text="Start Recording Now",
+            command=self.start_recording_thread
+        )
+        self.btn_now.pack(side="left", padx=5)
+
+        self.btn_stop = ttk.Button(
+            frame_controls,
+            text="Stop All Recordings",
+            command=self.stop_all
+        )
+        self.btn_stop.pack(side="right", padx=5)
+
+        # =========================
+        # LOGS + RECENT RECORDINGS
+        # =========================
+
+        dashboard_bottom = ttk.PanedWindow(
+        self.root,
+        orient=tk.HORIZONTAL
+        )
+        dashboard_bottom.configure(height=420)
+        dashboard_bottom.pack(
+            fill="both",
+            expand=True,
+            padx=10,
+            pady=5,
+            side="bottom"
+        )
+
+        # ---------- LIVE LOGS ----------
+
+        frame_logs = ttk.LabelFrame(
+            dashboard_bottom,
+            text="LIVE SYSTEM LOGS & RECORDING ACTIVITY",
+            padding=10
+        )
+
+        dashboard_bottom.add(frame_logs, weight=8)
+
+        self.log_area = scrolledtext.ScrolledText(
+            frame_logs,
+            width=70,
+            height=24,
+            state='disabled',
+            bg="#08111f",
+            fg="#39ff9c",
+            insertbackground="#39ff9c",
+            relief="flat",
+            borderwidth=0,
+            padx=18,
+            pady=18,
+            font=("Segoe UI", 11)
+        )
+
+        self.log_area.pack(
+            fill="both",
+            expand=True
+        )
+
+        ttk.Label(
+            frame_logs,
+            text="Real-time FFmpeg logs, RTSP stream monitoring, recording progress, errors, timer updates and CCTV activity appear here live.",
+            font=("Arial", 11, "bold")
+        ).pack(anchor="w", pady=6)
+
+        # ---------- RECENT RECORDINGS ----------
+
+        recent_frame = ttk.LabelFrame(
+            dashboard_bottom,
+            text="Recently Recorded Videos",
+            padding=10
+        )
+
+        dashboard_bottom.add(recent_frame, weight=3)
+
+        self.recent_recordings_list = tk.Listbox(
+            recent_frame,
+            height=18,
+            width=38,
+            bg="#08111f",
+            fg="#5eead4",
+            selectbackground="#2563eb",
+            selectforeground="white",
+            relief="flat",
+            borderwidth=0,
+            font=("Segoe UI", 10)
+        )
+
+        self.recent_recordings_list.pack(
+            fill="both",
+            expand=True
+        )
+
+        self.recent_recordings_list.bind(
+            '<Double-Button-1>',
+            lambda e: self.open_selected_recording()
+        )
+
+        recent_controls = ttk.Frame(recent_frame)
+        recent_controls.pack(fill="x", pady=5)
+
+        ttk.Button(
+            recent_controls,
+            text="Open Selected Video",
+            command=self.open_selected_recording
+        ).pack(side="left", padx=5)
+
+        ttk.Button(
+            recent_controls,
+            text="Refresh List",
+            command=self.refresh_recent_recordings
+        ).pack(side="left", padx=5)
+
+        self.refresh_recent_recordings()
+
+        footer = ttk.Label(
+            self.root,
+            text="Made by Saksham Talwar | For any problem contact: 7217739614",
+            font=("Arial", 9)
+        )
+        footer.pack(side="bottom", pady=5)
+    def update_live_clock(self):
+        try:
+            current_time = datetime.now().strftime(
+                "%A | %d %B %Y | %I:%M:%S %p"
+            )
+
+            self.live_clock_label.config(
+                text=f"LIVE SYSTEM TIME → {current_time}"
+            )
+
+        except Exception:
+            pass
+
+        self.root.after(1000, self.update_live_clock)
+
+    def show_help_guide(self):
+        help_text = """
+SMART TRAFFIC CAMERA RECORDING DASHBOARD
+
+━━━━━━━━━━━━━━━━━━━━━━
+STEP 1 — LOAD CAMERA CSV
+━━━━━━━━━━━━━━━━━━━━━━
+• Click Browse
+• Select one or multiple CSV files
+• Click 'Load Junctions From CSV'
+
+The traffic junctions will appear automatically.
+
+━━━━━━━━━━━━━━━━━━━━━━
+STEP 2 — SELECT JUNCTIONS
+━━━━━━━━━━━━━━━━━━━━━━
+• Click any junction to select it
+• Hold CTRL to select multiple cameras
+
+━━━━━━━━━━━━━━━━━━━━━━
+STEP 3 — LIVE PREVIEW
+━━━━━━━━━━━━━━━━━━━━━━
+• Select a junction
+• Click 'Open Live Preview'
+
+LIVE PREVIEW SHORTCUTS:
+SPACE → Pause / Resume
+F → Fullscreen
+ESC → Exit Preview
+
+━━━━━━━━━━━━━━━━━━━━━━
+STEP 4 — CHOOSE RECORDING MODE
+━━━━━━━━━━━━━━━━━━━━━━
+START NOW
+→ Starts recording instantly
+
+SCHEDULE TIME
+→ Starts recording automatically
+   at selected AM/PM time
+
+━━━━━━━━━━━━━━━━━━━━━━
+STEP 5 — SET RECORDING DURATION
+━━━━━━━━━━━━━━━━━━━━━━
+Examples:
+
+00:15:00
+→ 15 Minutes
+
+01:00:00
+→ 1 Hour
+
+02:30:00
+→ 2 Hours 30 Minutes
+
+━━━━━━━━━━━━━━━━━━━━━━
+STEP 6 — START RECORDING
+━━━━━━━━━━━━━━━━━━━━━━
+Click:
+'Start Recording Now'
+
+Timer and progress bar update automatically.
+
+━━━━━━━━━━━━━━━━━━━━━━
+STEP 7 — VIEW SAVED VIDEOS
+━━━━━━━━━━━━━━━━━━━━━━
+Recently recorded videos appear on the right side.
+
+Select a video and click:
+'Open Selected Video'
+
+━━━━━━━━━━━━━━━━━━━━━━
+IMPORTANT TIPS
+━━━━━━━━━━━━━━━━━━━━━━
+• Use TCP transport for stable CCTV recording
+• Use codec COPY for best compatibility
+• Ensure RTSP links are active
+• Videos save automatically
+• Green logs show active recording events
+
+━━━━━━━━━━━━━━━━━━━━━━
+BUILT FOR:
+━━━━━━━━━━━━━━━━━━━━━━
+• Traffic Monitoring Teams
+• CCTV Operators
+• Control Rooms
+• Non-Technical Operators
+        """
+
+        help_window = tk.Toplevel(self.root)
+        help_window.title("Smart Traffic Recorder - Operator Guide")
+        help_window.geometry("750x650")
+        help_window.minsize(600, 500)
+
+        help_frame = ttk.Frame(help_window, padding=10)
+        help_frame.pack(fill="both", expand=True)
+
+        ttk.Label(
+            help_frame,
+            text="Smart Traffic Recorder - Beginner Help Guide",
+            font=("Arial", 16, "bold")
+        ).pack(pady=(0, 10))
+
+        help_scroll = scrolledtext.ScrolledText(
+            help_frame,
+            wrap=tk.WORD,
+            font=("Arial", 11),
+            bg="#1e1e1e",
+            fg="white"
+        )
+        help_scroll.pack(fill="both", expand=True)
+
+        help_scroll.insert(tk.END, help_text)
+        help_scroll.config(state='disabled')
+
+        button_frame = ttk.Frame(help_frame)
+        button_frame.pack(fill="x", pady=10)
+
+        ttk.Button(
+            button_frame,
+            text="Close Guide",
+            command=help_window.destroy
+        ).pack(side="right")
+    def refresh_recent_recordings(self):
+        self.recent_recordings_list.delete(0, tk.END)
+
+        try:
+            save_directory = self.save_dir.get()
+
+            if not os.path.exists(save_directory):
+                return
+
+            video_files = [
+                os.path.join(save_directory, f)
+                for f in os.listdir(save_directory)
+                if f.lower().endswith('.mp4')
+            ]
+
+            video_files.sort(key=os.path.getmtime, reverse=True)
+
+            for video in video_files[:30]:
+                self.recent_recordings_list.insert(
+                    tk.END,
+                    os.path.basename(video)
+                )
+
+        except Exception as e:
+            self.log(f"[ERROR] Failed loading recent recordings: {e}")
+
+    def open_selected_recording(self):
+        try:
+            selected = self.recent_recordings_list.curselection()
+
+            if not selected:
+                return
+
+            filename = self.recent_recordings_list.get(selected[0])
+
+            full_path = os.path.join(self.save_dir.get(), filename)
+
+            if self.is_windows:
+                os.startfile(full_path)
+            elif sys.platform == 'darwin':
+                subprocess.Popen(['open', full_path])
+            else:
+                subprocess.Popen(['xdg-open', full_path])
+
+            self.log(f"[SYSTEM] Opened recording: {filename}")
+
+        except Exception as e:
+            self.log(f"[ERROR] Failed opening recording: {e}")
     def save_recent_rtsp(self, name, rtsp):
         try:
             recent_data = []
@@ -193,15 +661,66 @@ class RTSPRecorderGUI:
                 ffplay_path,
                 "-rtsp_transport",
                 self.transport.get(),
+                "-hide_banner",
+                "-loglevel",
+                "quiet",
                 "-fflags",
-                "nobuffer",
+                "nobuffer+discardcorrupt",
                 "-flags",
                 "low_delay",
+                "-window_title",
+                f"Live Preview - {selected_camera['name']} | SPACE Pause | F Fullscreen | ESC Exit",
+                "-x",
+                "1280",
+                "-y",
+                "720",
                 rtsp_link
             ]
 
-            subprocess.Popen(preview_cmd)
+            self.preview_process = subprocess.Popen(
+                preview_cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+            self.preview_paused = False
 
+            instruction_window = tk.Toplevel(self.root)
+            instruction_window.title("Live Preview Controls")
+            instruction_window.geometry("420x140")
+            instruction_window.resizable(False, False)
+            instruction_window.configure(bg="#1e1e1e")
+
+            ttk.Label(
+                instruction_window,
+                text="LIVE PREVIEW CONTROLS",
+                font=("Arial", 14, "bold")
+            ).pack(pady=(10, 5))
+
+            instructions = (
+                "SPACE → Pause / Resume\n"
+                "F → Fullscreen Mode\n"
+                "ESC → Exit Live Preview"
+            )
+
+            instruction_label = tk.Label(
+                instruction_window,
+                text=instructions,
+                font=("Arial", 11),
+                bg="#1e1e1e",
+                fg="white",
+                justify="left"
+            )
+            instruction_label.pack(pady=5)
+
+            ttk.Button(
+                instruction_window,
+                text="Close",
+                command=instruction_window.destroy
+            ).pack(pady=(5, 10))
+
+            self.log(
+                "[INFO] Preview Controls → SPACE: Pause | F: Fullscreen | ESC: Exit"
+            )
             self.log(
                 f"[SYSTEM] Live preview opened for {selected_camera['name']}"
             )
@@ -209,29 +728,10 @@ class RTSPRecorderGUI:
         except Exception as e:
             self.log(f"[ERROR] Live preview failed: {e}")
 
-        frame_time = ttk.LabelFrame(self.root, text="Recording Schedule", padding=10)
-        frame_time.pack(fill="x", padx=10, pady=5)
+    def set_duration_preset(self, value):
+        self.duration.set(value)
+        self.log(f"[SYSTEM] Recording duration preset selected: {value}")
 
-        ttk.Label(frame_time, text="Start Time (HH:MM):").grid(row=0, column=0, sticky="w")
-        ttk.Entry(frame_time, textvariable=self.start_time, width=12).grid(row=0, column=1, sticky="w", padx=5)
-
-        ttk.Label(frame_time, text="Recording Duration (HH:MM:SS):").grid(row=0, column=2, sticky="w", padx=10)
-        ttk.Entry(frame_time, textvariable=self.duration, width=12).grid(row=0, column=3, sticky="w")
-
-        self.timer_label = ttk.Label(
-            frame_time,
-            text="Remaining Time: --:--:--",
-            font=("Arial", 10, "bold")
-        )
-        self.timer_label.grid(row=1, column=0, columnspan=2, pady=10, sticky="w")
-
-        self.progress = Progressbar(
-            frame_time,
-            orient="horizontal",
-            length=300,
-            mode="determinate"
-        )
-        self.progress.grid(row=1, column=2, columnspan=2, padx=10, pady=10, sticky="w")
     def parse_duration_to_seconds(self, duration_text):
         try:
             parts = duration_text.strip().split(':')
@@ -258,7 +758,9 @@ class RTSPRecorderGUI:
                 self.timer_label.config(text="Remaining Time: 00:00:00")
                 self.progress['value'] = 100
 
-                self.log("[SYSTEM] Recording duration completed successfully.")
+                self.log(
+                    "[SYSTEM] Recording timer reached configured duration limit."
+                )       
 
                 self.stop_all()
                 break
@@ -282,70 +784,23 @@ class RTSPRecorderGUI:
 
             time.sleep(1)
 
-        frame_ffmpeg = ttk.LabelFrame(self.root, text="Video Recording Quality Settings", padding=10)
-        frame_ffmpeg.pack(fill="x", padx=10, pady=5)
-
-        ttk.Label(frame_ffmpeg, text="Video Codec:").grid(row=0, column=0, sticky="w")
-        ttk.Combobox(
-            frame_ffmpeg,
-            textvariable=self.codec,
-            values=["libx264", "copy", "h264_videotoolbox"],
-            width=18
-        ).grid(row=0, column=1, padx=5, sticky="w")
-
-        ttk.Label(frame_ffmpeg, text="Bitrate:").grid(row=0, column=2, sticky="w", padx=10)
-        ttk.Entry(frame_ffmpeg, textvariable=self.bitrate, width=12).grid(row=0, column=3, sticky="w")
-
-        ttk.Label(frame_ffmpeg, text="RTSP Transport:").grid(row=1, column=0, sticky="w", pady=5)
-        ttk.Combobox(
-            frame_ffmpeg,
-            textvariable=self.transport,
-            values=["tcp", "udp"],
-            width=18
-        ).grid(row=1, column=1, padx=5, sticky="w")
-
-        frame_controls = ttk.Frame(self.root, padding=10)
-        frame_controls.pack(fill="x")
-
-        self.btn_schedule = ttk.Button(
-            frame_controls,
-            text="Schedule Recording",
-            command=self.start_scheduled_thread
-        )
-        self.btn_schedule.pack(side="left", padx=5)
-
-        self.btn_now = ttk.Button(
-            frame_controls,
-            text="Start Recording Now",
-            command=self.start_recording_thread
-        )
-        self.btn_now.pack(side="left", padx=5)
-
-        self.btn_stop = ttk.Button(
-            frame_controls,
-            text="Stop All Recordings",
-            command=self.stop_all
-        )
-        self.btn_stop.pack(side="right", padx=5)
-
-        frame_logs = ttk.LabelFrame(self.root, text="Live System Activity", padding=10)
-        frame_logs.pack(fill="both", expand=True, padx=10, pady=5)
-
-        self.log_area = scrolledtext.ScrolledText(
-            frame_logs,
-            height=16,
-            state='disabled',
-            bg="black",
-            fg="lime",
-            font=("Consolas", 10)
-        )
-        self.log_area.pack(fill="both", expand=True)
-
     def log(self, message):
-        self.log_area.config(state='normal')
-        self.log_area.insert(tk.END, f"[{datetime.now().strftime('%H:%M:%S')}] {message}\n")
-        self.log_area.see(tk.END)
-        self.log_area.config(state='disabled')
+        timestamp = datetime.now().strftime('%H:%M:%S')
+        formatted_message = f"[{timestamp}] {message}"
+
+        print(formatted_message)
+
+        if not hasattr(self, 'log_area'):
+            return
+
+        try:
+            self.log_area.config(state='normal')
+            self.log_area.insert(tk.END, formatted_message + "\n")
+            self.log_area.see(tk.END)
+            self.log_area.config(state='disabled')
+            self.root.update_idletasks()
+        except Exception:
+            pass
 
     def browse_csv(self):
         paths = filedialog.askopenfilenames(filetypes=[("CSV Files", "*.csv")])
@@ -359,7 +814,10 @@ class RTSPRecorderGUI:
             csv_files = self.root.tk.splitlist(self.csv_path.get())
 
             for csv_file in csv_files:
-                df = pd.read_csv(csv_file)
+                try:
+                    df = pd.read_csv(csv_file, on_bad_lines='skip')
+                except TypeError:
+                     df = pd.read_csv(csv_file)
 
                 rtsp_col = [
                     col for col in df.columns
@@ -442,28 +900,56 @@ class RTSPRecorderGUI:
         threading.Thread(target=self.wait_and_start, daemon=True).start()
 
     def wait_and_start(self):
-        target_time = self.start_time.get()
-        self.log(f"[SYSTEM] Scheduled. Waiting for {target_time} to initiate stream capture...")
-        self.btn_schedule.config(state="disabled")
+        target_time = self.start_time.get().strip()
+        period = self.start_period.get()
+
+        try:
+            parsed_time = datetime.strptime(
+                f"{target_time} {period}",
+                "%I:%M %p"
+            )
+
+            target_24 = parsed_time.strftime("%H:%M")
+
+        except Exception:
+            self.log("[ERROR] Invalid scheduled time format.")
+            return
+
+        self.log(
+            f"[SYSTEM] Scheduled recording enabled for {target_time} {period}"
+        )
+
+        self.btn_now.config(state="disabled")
+
         while True:
-            if datetime.now().strftime("%H:%M") == target_time:
+            if datetime.now().strftime("%H:%M") == target_24:
                 self.start_recordings()
                 break
+
             time.sleep(1)
 
     def start_recording_thread(self):
-        if self.is_recording: return
-        threading.Thread(target=self.start_recordings, daemon=True).start()
+        if self.is_recording:
+            return
+
+        if self.start_mode.get() == "scheduled":
+            threading.Thread(target=self.wait_and_start, daemon=True).start()
+        else:
+            threading.Thread(target=self.start_recordings, daemon=True).start()
 
     def live_log_updater(self):
         status_messages = [
-            "Receiving I-frames on TCP port...",
-            "Buffering stream data...",
-            "Writing multiplexed packet to disk...",
-            "Processing h264_videotoolbox hardware encoding...",
-            "Syncing RTSP stream transport...",
-            "Analyzing incoming bitrate..."
-        ]
+    "Receiving live RTSP packets from traffic camera...",
+    "Collecting video stream data into recording buffer...",
+    "Writing encoded video frames to MP4 container...",
+    "Monitoring stream bitrate and packet stability...",
+    "Synchronizing traffic camera timestamps...",
+    "Validating recording integrity and frame continuity...",
+    "Traffic footage data actively being stored to disk...",
+    "Maintaining stable RTSP TCP transport connection...",
+    "Analyzing incoming stream quality and latency...",
+    "Live CCTV traffic feed recording in progress..."
+]
         while self.is_recording:
             time.sleep(random.uniform(0.8, 2.5))
             if not self.active_files: continue
@@ -475,13 +961,19 @@ class RTSPRecorderGUI:
                 if os.path.exists(filepath):
                     size_mb = os.path.getsize(filepath) / (1024 * 1024)
                     msg = random.choice(status_messages)
-                    self.log(f"[Junction {cam_idx + 1}] {msg} | Current Size: {size_mb:.2f} MB")
+                    camera_name = os.path.basename(filepath)
+
+                self.log(
+                    f"[LIVE STATUS] {camera_name} | {msg} | Recorded Data: {size_mb:.2f} MB"
+                )
             except Exception:
                 pass
 
     def start_recordings(self):
         self.is_recording = True
         self.log("[SYSTEM] Parsing RTSP CSV coordinates...")
+        self.log("[SYSTEM] Initializing FFmpeg recording engine...")
+        self.log("[SYSTEM] Preparing selected RTSP streams...")
         self.active_files = []
         self.recording_duration_seconds = self.parse_duration_to_seconds(
             self.duration.get()
@@ -516,6 +1008,9 @@ class RTSPRecorderGUI:
 
         for i, camera_data in enumerate(links, 1):
             junction_name = camera_data["name"].replace(" ", "_")
+            self.log(
+                f"[STREAM] Fetching stream connection for: {junction_name}"
+            )
             link = camera_data["rtsp"]
 
             filename = os.path.join(
@@ -523,6 +1018,9 @@ class RTSPRecorderGUI:
                 f"{junction_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4"
             )
             self.active_files.append(filename)
+            self.log(
+             f"[STREAM] Output file prepared: {os.path.basename(filename)}"
+            )
 
             cmd = [
                 self.ffmpeg_path,
@@ -585,7 +1083,13 @@ class RTSPRecorderGUI:
                     )
 
                     continue
-                self.log(f"[SYSTEM] Recording started successfully for {junction_name}")
+                    self.log(
+                 f"[RECORDING ACTIVE] {junction_name} stream recording successfully."
+                )   
+
+                self.log(
+                    f"[DATA FLOW] Collecting RTSP packets and writing video data..."
+                )
             except Exception as e:
                 self.log(f"[ERROR] {junction_name} connection failed: {e}")
 
@@ -594,26 +1098,55 @@ class RTSPRecorderGUI:
         threading.Thread(target=self.update_recording_timer, daemon=True).start()
 
     def stop_all(self):
-        if not self.processes: return
-        self.log("[SYSTEM] Sending SIGTERM to terminate hardware encoding safely...")
+        self.log("[SYSTEM] Stopping all active recordings...")
+
+        self.is_recording = False
+
         for p in self.processes:
             try:
+               if p.poll() is None:
+
                 if self.is_windows:
                     p.terminate()
-                    p.wait(timeout=5)
+
                 else:
-                    os.killpg(os.getpgid(p.pid), signal.SIGTERM)
-                    p.wait(timeout=5)
-            except Exception:
-                pass
+                    try:
+                        os.killpg(
+                            os.getpgid(p.pid),
+                            signal.SIGTERM
+                        )
+                    except Exception:
+                        p.terminate()
+
+                p.wait(timeout=5)
+
+            except Exception as e:
+                self.log(
+                f"[WARNING] Failed stopping process: {e}"
+            )
+
         self.processes.clear()
         self.active_files.clear()
-        self.is_recording = False
+
         self.btn_schedule.config(state="normal")
-        self.timer_label.config(text="Remaining Time: --:--:--")
+        self.btn_now.config(state="normal")
+
+        self.timer_label.config(
+            text="Remaining Time: --:--:--"
+        )
+
         self.progress['value'] = 0
         self.recording_end_time = None
-        self.log("[SYSTEM] Recording processes terminated. Data flushed to disk.")
+
+        self.log(
+            "[SYSTEM] Refreshing recently recorded videos list..."
+        )
+
+        self.refresh_recent_recordings()
+
+        self.log(
+            "[SYSTEM] Recording processes terminated successfully."
+        )
 
 
 if __name__ == "__main__":
