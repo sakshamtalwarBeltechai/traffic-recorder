@@ -1634,58 +1634,114 @@ BUILT FOR:
                 self.root.tk.call("list", *paths)
             )
     def load_junctions(self):
-        self.log(f"CSV RAW VALUE = {self.csv_path.get()}")
         self.junction_listbox.delete(0, tk.END)
         self.all_junctions = []
 
+        raw_value = self.csv_path.get().strip()
+
+        self.log(f"CSV RAW VALUE = {raw_value}")
+
         try:
-            csv_files = self.root.tk.splitlist(self.csv_path.get())
+            # Handle macOS packaged app weird tuple-string format
+            if raw_value.startswith("(") and raw_value.endswith(")"):
+                raw_value = raw_value.strip("()")
+                csv_files = [
+                    x.strip().strip("'").strip('"')
+                    for x in raw_value.split(",")
+                    if x.strip()
+                ]
+
+            else:
+                try:
+                    csv_files = list(self.root.tk.splitlist(raw_value))
+                except Exception:
+                    csv_files = [raw_value]
+
+            self.log(f"PARSED CSV FILES = {csv_files}")
 
             for csv_file in csv_files:
-                try:
-                    df = pd.read_csv(csv_file, on_bad_lines='skip')
-                except TypeError:
-                     df = pd.read_csv(csv_file)
 
-                rtsp_col = [
+                csv_file = csv_file.strip()
+
+                if not os.path.exists(csv_file):
+                    self.log(f"[ERROR] File not found: {csv_file}")
+                    continue
+
+                self.log(f"[SYSTEM] Loading CSV: {csv_file}")
+
+                try:
+                    df = pd.read_csv(csv_file, on_bad_lines="skip")
+                except TypeError:
+                    df = pd.read_csv(csv_file)
+
+                rtsp_columns = [
                     col for col in df.columns
-                    if 'rtsp' in col.lower() or 'link' in col.lower()
-                ][0]
+                    if "rtsp" in col.lower()
+                    or "link" in col.lower()
+                    or "url" in col.lower()
+                ]
+
+                if not rtsp_columns:
+                    self.log(
+                        f"[ERROR] No RTSP column found in {os.path.basename(csv_file)}"
+                    )
+                    continue
+
+                rtsp_col = rtsp_columns[0]
 
                 possible_name_cols = [
                     col for col in df.columns
-                    if 'name' in col.lower() or 'junction' in col.lower() or 'camera' in col.lower()
+                    if "name" in col.lower()
+                    or "junction" in col.lower()
+                    or "camera" in col.lower()
+                    or "site" in col.lower()
                 ]
 
-                for idx, row in df.iterrows():
+                for _, row in df.iterrows():
+
                     rtsp_link = str(row[rtsp_col]).strip()
 
-                    if rtsp_link == 'nan' or not rtsp_link:
+                    if (
+                        not rtsp_link
+                        or rtsp_link.lower() == "nan"
+                    ):
                         continue
 
                     if possible_name_cols:
-                        junction_name = str(row[possible_name_cols[0]])
+                        junction_name = str(
+                            row[possible_name_cols[0]]
+                        ).strip()
                     else:
-                        junction_name = f"Junction {len(self.all_junctions) + 1}"
-
-                    display_text = f"{junction_name}"
+                        junction_name = (
+                            f"Junction {len(self.all_junctions)+1}"
+                        )
 
                     self.all_junctions.append({
                         "name": junction_name,
                         "rtsp": rtsp_link
                     })
 
-                    self.junction_listbox.insert(tk.END, display_text)
+                    self.junction_listbox.insert(
+                        tk.END,
+                        junction_name
+                    )
 
-            self.log(f"[SYSTEM] Loaded {len(self.all_junctions)} traffic junctions successfully.")
+            self.log(
+                f"[SYSTEM] Loaded {len(self.all_junctions)} traffic junctions successfully."
+            )
 
-            if len(self.all_junctions) == 0:
-                messagebox.showwarning("No Junctions Found", "No valid RTSP links were found inside the selected CSV files.")
+            if not self.all_junctions:
+                messagebox.showwarning(
+                    "No Junctions Found",
+                    "No valid RTSP links were found inside the selected CSV files."
+                )
 
         except Exception as e:
-            messagebox.showerror("CSV Loading Error", str(e))
             self.log(f"[ERROR] CSV loading failed: {e}")
-
+            messagebox.showerror(
+                "CSV Loading Error",
+                str(e)
+            )
     def add_manual_rtsp(self):
         rtsp_link = self.manual_rtsp.get().strip()
 
