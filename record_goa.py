@@ -24,6 +24,9 @@ import glob
 from datetime import timedelta
 import smtplib
 from email.message import EmailMessage
+import webbrowser
+import urllib.request
+import zipfile
 
 class RTSPRecorderGUI:
     def wait_for_video_ready(self, file_path, timeout=120):
@@ -244,11 +247,95 @@ class RTSPRecorderGUI:
             base_path = os.path.abspath('.')
 
         return os.path.join(base_path, relative_path)
+
+    def download_ffmpeg_windows(self):
+        try:
+            install_dir = os.path.join(
+                os.path.expanduser("~"),
+                ".traffic_recorder",
+                "ffmpeg"
+            )
+
+            os.makedirs(install_dir, exist_ok=True)
+
+            zip_path = os.path.join(install_dir, "ffmpeg.zip")
+
+            download_url = (
+                "https://www.gyan.dev/ffmpeg/builds/"
+                "ffmpeg-release-essentials.zip"
+            )
+
+            self.log("[SYSTEM] Downloading FFmpeg automatically...")
+
+            urllib.request.urlretrieve(download_url, zip_path)
+
+            self.log("[SYSTEM] Extracting FFmpeg...")
+
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                zip_ref.extractall(install_dir)
+
+            try:
+                os.remove(zip_path)
+            except Exception:
+                pass
+
+            for root_dir, dirs, files in os.walk(install_dir):
+                if 'ffmpeg.exe' in files:
+                    self.ffmpeg_path = os.path.join(root_dir, 'ffmpeg.exe')
+                    self.ffprobe_path = os.path.join(root_dir, 'ffprobe.exe')
+                    self.ffplay_path = os.path.join(root_dir, 'ffplay.exe')
+
+                    self.log("[SYSTEM] FFmpeg installed successfully.")
+                    return True
+
+            self.log("[SYSTEM] FFmpeg download completed but binaries were not found.")
+            return False
+
+        except Exception as e:
+            self.log(f"[SYSTEM] Automatic FFmpeg installation failed: {e}")
+            return False
+
     def verify_ffmpeg(self):
         """
-        Check whether ffmpeg, ffprobe and ffplay exist.
-        If missing, allow user to locate them manually.
+        Detect bundled FFmpeg first.
+        Fall back to system installation.
+        Allow manual selection if not found.
         """
+
+        # --------------------------------
+        # 1. Check bundled binaries
+        # --------------------------------
+
+        bundled_ffmpeg = self.resource_path(
+            "ffmpeg.exe" if self.is_windows else "ffmpeg"
+        )
+
+        bundled_ffprobe = self.resource_path(
+            "ffprobe.exe" if self.is_windows else "ffprobe"
+        )
+
+        bundled_ffplay = self.resource_path(
+            "ffplay.exe" if self.is_windows else "ffplay"
+        )
+        self.log(f"[FFMPEG DEBUG] bundled_ffmpeg={bundled_ffmpeg}")
+        self.log(f"[FFMPEG DEBUG] bundled_ffprobe={bundled_ffprobe}")
+        self.log(f"[FFMPEG DEBUG] ffmpeg exists={os.path.exists(bundled_ffmpeg)}")
+        self.log(f"[FFMPEG DEBUG] ffprobe exists={os.path.exists(bundled_ffprobe)}")
+
+        if (
+            os.path.exists(bundled_ffmpeg)
+            and os.path.exists(bundled_ffprobe)
+        ):
+            self.ffmpeg_path = bundled_ffmpeg
+            self.ffprobe_path = bundled_ffprobe
+            self.ffplay_path = bundled_ffplay
+
+            self.log("[SYSTEM] Using bundled FFmpeg binaries")
+            return True
+
+        # --------------------------------
+        # 2. Check system PATH
+        # --------------------------------
 
         ffmpeg_found = shutil.which("ffmpeg")
         ffprobe_found = shutil.which("ffprobe")
@@ -258,48 +345,69 @@ class RTSPRecorderGUI:
             self.ffmpeg_path = ffmpeg_found
             self.ffprobe_path = ffprobe_found
             self.ffplay_path = ffplay_found
+
+            self.log("[SYSTEM] Using system FFmpeg installation")
             return True
 
-        answer = messagebox.askyesno(
+        # --------------------------------
+        # 3. Ask user
+        # --------------------------------
+
+        answer = messagebox.askyesnocancel(
             "FFmpeg Missing",
-            "FFmpeg was not found on this computer.\n\n"
-            "Would you like to select ffmpeg manually?"
+            "FFmpeg was not found.\n\n"
+            "YES → Install FFmpeg Automatically\n"
+            "NO → Locate Existing FFmpeg\n"
+            "CANCEL → Exit"
         )
 
-        if not answer:
+        if answer is None:
             self.root.destroy()
             return False
 
-        ffmpeg_file = filedialog.askopenfilename(
-            title="Locate ffmpeg executable"
-        )
+        if answer is True:
 
-        if not ffmpeg_file:
-            self.root.destroy()
-            return False
+            if self.is_windows:
+                if self.download_ffmpeg_windows():
+                    return True
 
-        self.ffmpeg_path = ffmpeg_file
+                messagebox.showerror(
+                    "Installation Failed",
+                    "Unable to automatically install FFmpeg."
+                )
+                self.root.destroy()
+                return False
 
-        ffmpeg_folder = os.path.dirname(ffmpeg_file)
-
-        self.ffprobe_path = os.path.join(
-            ffmpeg_folder,
-            "ffprobe.exe" if self.is_windows else "ffprobe"
-        )
-
-        self.ffplay_path = os.path.join(
-            ffmpeg_folder,
-            "ffplay.exe" if self.is_windows else "ffplay"
-        )
-
-        if not os.path.exists(self.ffprobe_path):
-            messagebox.showerror(
-                "Missing FFprobe",
-                "ffprobe was not found in the same folder."
+            messagebox.showinfo(
+                "Automatic Installation",
+                "Automatic installation is currently supported on Windows only."
             )
-            return False
 
-        return True
+        if answer is False:
+
+            ffmpeg_file = filedialog.askopenfilename(
+                title="Select ffmpeg executable"
+            )
+
+            if not ffmpeg_file:
+                self.root.destroy()
+                return False
+
+            self.ffmpeg_path = ffmpeg_file
+
+            ffmpeg_folder = os.path.dirname(ffmpeg_file)
+
+            self.ffprobe_path = os.path.join(
+                ffmpeg_folder,
+                "ffprobe.exe" if self.is_windows else "ffprobe"
+            )
+
+            self.ffplay_path = os.path.join(
+                ffmpeg_folder,
+                "ffplay.exe" if self.is_windows else "ffplay"
+            )
+
+            return os.path.exists(self.ffprobe_path)
 
     def setup_ui(self):
         # =========================
