@@ -1625,10 +1625,16 @@ BUILT FOR:
             pass
 
     def browse_csv(self):
-        paths = filedialog.askopenfilenames(filetypes=[("CSV Files", "*.csv")])
+        paths = filedialog.askopenfilenames(
+            filetypes=[("CSV Files", "*.csv")]
+        )
+
         if paths:
-            self.csv_path.set(paths)
+            self.csv_path.set(
+                self.root.tk.call("list", *paths)
+            )
     def load_junctions(self):
+        self.log(f"CSV RAW VALUE = {self.csv_path.get()}")
         self.junction_listbox.delete(0, tk.END)
         self.all_junctions = []
 
