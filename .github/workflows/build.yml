@@ -27,7 +27,11 @@ jobs:
 
       - name: Build Windows EXE
         run: |
-          pyinstaller --noconfirm --onefile --windowed --add-binary "ffmpeg.exe;." record_goa.py
+          pyinstaller --noconfirm --onefile --windowed \
+          --add-binary "ffmpeg.exe;." \
+          --add-binary "ffprobe.exe;." \
+          --add-binary "ffplay.exe;." \
+          record_goa.py
 
       - name: Rename Windows Build
         run: |

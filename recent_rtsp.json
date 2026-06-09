@@ -1,0 +1,22 @@
+[
+    {
+        "name": "munjvihartest",
+        "rtsp": "rtsp://admin:Munjvihara@2026@103.56.42.162:55411/ch01.264?dev=1"
+    },
+    {
+        "name": "munjvihar test 1",
+        "rtsp": "rtsp://admin:Munjvihara@2026@103.56.42.162:55411/ch01.264?dev=1"
+    },
+    {
+        "name": "munj vihar test 0",
+        "rtsp": "rtsp://admin:Munjvihara@2026@103.56.42.162:55412/ch01.264?dev=1"
+    },
+    {
+        "name": "test 1",
+        "rtsp": "rtsp://admin:Powerhouse@2026@103.56.42.163:55412/ch01.264?dev=1"
+    },
+    {
+        "name": "test 2",
+        "rtsp": "rtsp://admin:Powerhouse@2026@103.56.42.163:55411/ch01.264?dev=1"
+    }
+]

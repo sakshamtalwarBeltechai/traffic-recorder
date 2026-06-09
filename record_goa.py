@@ -7,6 +7,12 @@ import pandas as pd
 import subprocess
 import threading
 import time
+# from google.oauth2.credentials import Credentials
+# from google_auth_oauthlib.flow import InstalledAppFlow
+# from google.auth.transport.requests import Request
+# from googleapiclient.discovery import build
+# from googleapiclient.http import MediaFileUpload
+import pickle
 from datetime import datetime
 import os
 import signal
@@ -14,13 +20,88 @@ import random
 import sys
 import json
 import shutil
+import glob
+from datetime import timedelta
+import smtplib
+from email.message import EmailMessage
 
 class RTSPRecorderGUI:
+    def wait_for_video_ready(self, file_path, timeout=120):
+        """
+        Wait until FFmpeg finishes writing and the MP4 becomes stable.
+        Prevents uploading partially processed videos.
+        """
+
+        self.log(
+            f"[VIDEO CHECK] Waiting for video finalization: {os.path.basename(file_path)}"
+        )
+
+        start_time = time.time()
+        previous_size = -1
+        stable_count = 0
+
+        while time.time() - start_time < timeout:
+            try:
+                if not os.path.exists(file_path):
+                    time.sleep(2)
+                    continue
+
+                current_size = os.path.getsize(file_path)
+
+                # File still growing
+                if current_size != previous_size:
+                    previous_size = current_size
+                    stable_count = 0
+
+                else:
+                    stable_count += 1
+
+                # File size stable for ~6 seconds
+                if stable_count >= 3:
+
+                    # Validate video using ffprobe
+                    ffprobe_path = shutil.which('ffprobe') or 'ffprobe'
+
+                    probe_cmd = [
+                        ffprobe_path,
+                        '-v', 'error',
+                        '-show_entries', 'format=duration',
+                        '-of', 'default=noprint_wrappers=1:nokey=1',
+                        file_path
+                    ]
+
+                    result = subprocess.run(
+                        probe_cmd,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True
+                    )
+
+                    if result.returncode == 0 and result.stdout.strip():
+                        self.log(
+                            f"[VIDEO CHECK] Video finalized successfully: {os.path.basename(file_path)}"
+                        )
+                        return True
+
+                time.sleep(2)
+
+            except Exception as e:
+                self.log(f"[VIDEO CHECK ERROR] {e}")
+                time.sleep(2)
+
+        self.log(
+            f"[VIDEO CHECK WARNING] Timed out waiting for video readiness: {os.path.basename(file_path)}"
+        )
+
+        return False
     def __init__(self, root):
+        
         self.root = root
         self.root.title("FFmpeg RTSP Multi-Recorder")
         self.root.geometry("1600x1020")
         self.root.minsize(1350, 850)
+        # START WITH HIDDEN MAIN WINDOW
+        self.root.withdraw()
         self.main_canvas = None
         self.scrollable_frame = None
         self.processes = []
@@ -30,8 +111,25 @@ class RTSPRecorderGUI:
         self.is_recording = False
         self.recording_end_time = None
         self.recording_duration_seconds = 0
-        
-        self.csv_path = tk.StringVar(value="/Users/sakshamtalwar/Beltech_Annotation/Excel_Sheets/RTSP_Goa.csv")
+        self.storage_label = None
+        self.auto_mode_enabled = False
+        self.auto_record_time = tk.StringVar(value="09:00")
+        self.auto_last_run_date = None
+        self.last_auto_camera = None
+        self.gmail_sender = "work.sakshamtalwar@gmail.com"
+        self.gmail_app_password = "xkeq iewd gkgg aqpo"
+
+        # MULTIPLE EMAIL RECIPIENTS
+        self.notification_emails = [
+            
+            "saksham.talwar@beltech.in",
+            
+        ]
+
+        self.google_drive_folder_link = "https://drive.google.com/drive/folders/1nVHCKptgCVOaoRK3st8Sw-t-mwnRZOWy?usp=sharing"
+        self.google_drive_folder_id = "1nVHCKptgCVOaoRK3st8Sw-t-mwnRZOWy"
+                
+        self.csv_path = tk.StringVar(value="")
         self.save_dir = tk.StringVar(value=os.path.expanduser("~/Desktop"))
         self.start_time = tk.StringVar(value="01:30")
         self.start_period = tk.StringVar(value="PM")
@@ -40,7 +138,7 @@ class RTSPRecorderGUI:
         if os.name == 'nt':
             default_codec = 'copy'
         else:
-            default_codec = 'h264_videotoolbox'
+            default_codec = 'copy'
 
         self.codec = tk.StringVar(value=default_codec)
         self.bitrate = tk.StringVar(value="1M")
@@ -53,33 +151,155 @@ class RTSPRecorderGUI:
 
         if getattr(sys, 'frozen', False):
             base_path = sys._MEIPASS
+            user_data_path = os.path.join(os.path.expanduser('~'), '.traffic_recorder')
+            os.makedirs(user_data_path, exist_ok=True)
         else:
             base_path = os.path.dirname(os.path.abspath(__file__))
+            user_data_path = base_path
 
         if self.is_windows:
-            bundled_ffmpeg = os.path.join(base_path, 'ffmpeg.exe')
-            bundled_ffplay = os.path.join(base_path, 'ffplay.exe')
-
+            bundled_ffmpeg = self.resource_path('ffmpeg.exe')
             self.ffmpeg_path = bundled_ffmpeg if os.path.exists(bundled_ffmpeg) else 'ffmpeg'
-            self.ffplay_path = bundled_ffplay if os.path.exists(bundled_ffplay) else 'ffplay'
-
         else:
             self.ffmpeg_path = shutil.which('ffmpeg') or 'ffmpeg'
-            self.ffplay_path = shutil.which('ffplay') or 'ffplay'
 
-        self.config_file = os.path.join(base_path, 'recent_rtsp.json')
+        self.config_file = os.path.join(user_data_path, 'recent_rtsp.json')
+        self.camera_history_file = os.path.join(user_data_path, 'camera_history.json')
 
-        if self.is_windows:
-            if not os.path.exists(self.ffmpeg_path):
-                self.ffmpeg_path = 'ffmpeg'
-
-            if not os.path.exists(self.ffplay_path):
-                self.ffplay_path = 'ffplay'
+        if self.is_windows and not os.path.exists(self.ffmpeg_path):
+            self.ffmpeg_path = 'ffmpeg'
 
         self.setup_ui()
+        if not self.verify_ffmpeg():
+            return
+        self.show_welcome_screen()
         self.update_live_clock()
+        self.update_storage_info()
         self.log("[SYSTEM] Smart Traffic Recorder Dashboard initialized successfully.")
         self.log("[SYSTEM] Ready to load RTSP CSV files and start monitoring.")
+
+
+    def show_welcome_screen(self):
+        welcome = tk.Toplevel()
+        welcome.overrideredirect(True)
+        welcome.configure(bg="#0f172a")
+
+        screen_width = welcome.winfo_screenwidth()
+        screen_height = welcome.winfo_screenheight()
+
+        width = 700
+        height = 300
+
+        x = (screen_width // 2) - (width // 2)
+        y = (screen_height // 2) - (height // 2)
+
+        welcome.geometry(f"{width}x{height}+{x}+{y}")
+        welcome.attributes('-topmost', True)
+        welcome.attributes('-alpha', 1.0)
+
+        title_label = tk.Label(
+            welcome,
+            text="SMART TRAFFIC RECORDER",
+            font=("Segoe UI", 28, "bold"),
+            fg="#38bdf8",
+            bg="#0f172a"
+        )
+        title_label.pack(expand=True)
+
+        subtitle_label = tk.Label(
+            welcome,
+            text="Welcome User • Initializing Dashboard...",
+            font=("Segoe UI", 14),
+            fg="#cbd5e1",
+            bg="#0f172a"
+        )
+        subtitle_label.pack(pady=(0, 40))
+
+        progress = ttk.Progressbar(
+            welcome,
+            orient="horizontal",
+            mode="indeterminate",
+            length=350
+        )
+        progress.pack(pady=(0, 30))
+        progress.start(12)
+
+        def fade_out(alpha=1.0):
+            alpha -= 0.05
+
+            if alpha <= 0:
+                welcome.destroy()
+                self.root.deiconify()
+                return
+
+            welcome.attributes('-alpha', alpha)
+            welcome.after(50, lambda: fade_out(alpha))
+
+        welcome.after(1800, fade_out)
+
+    def resource_path(self, relative_path):
+        try:
+            base_path = sys._MEIPASS
+        except Exception:
+            base_path = os.path.abspath('.')
+
+        return os.path.join(base_path, relative_path)
+    def verify_ffmpeg(self):
+        """
+        Check whether ffmpeg, ffprobe and ffplay exist.
+        If missing, allow user to locate them manually.
+        """
+
+        ffmpeg_found = shutil.which("ffmpeg")
+        ffprobe_found = shutil.which("ffprobe")
+        ffplay_found = shutil.which("ffplay")
+
+        if ffmpeg_found and ffprobe_found:
+            self.ffmpeg_path = ffmpeg_found
+            self.ffprobe_path = ffprobe_found
+            self.ffplay_path = ffplay_found
+            return True
+
+        answer = messagebox.askyesno(
+            "FFmpeg Missing",
+            "FFmpeg was not found on this computer.\n\n"
+            "Would you like to select ffmpeg manually?"
+        )
+
+        if not answer:
+            self.root.destroy()
+            return False
+
+        ffmpeg_file = filedialog.askopenfilename(
+            title="Locate ffmpeg executable"
+        )
+
+        if not ffmpeg_file:
+            self.root.destroy()
+            return False
+
+        self.ffmpeg_path = ffmpeg_file
+
+        ffmpeg_folder = os.path.dirname(ffmpeg_file)
+
+        self.ffprobe_path = os.path.join(
+            ffmpeg_folder,
+            "ffprobe.exe" if self.is_windows else "ffprobe"
+        )
+
+        self.ffplay_path = os.path.join(
+            ffmpeg_folder,
+            "ffplay.exe" if self.is_windows else "ffplay"
+        )
+
+        if not os.path.exists(self.ffprobe_path):
+            messagebox.showerror(
+                "Missing FFprobe",
+                "ffprobe was not found in the same folder."
+            )
+            return False
+
+        return True
 
     def setup_ui(self):
         # =========================
@@ -208,6 +428,14 @@ class RTSPRecorderGUI:
         )
         self.live_clock_label.pack(anchor="center", pady=4)
 
+        self.storage_label = ttk.Label(
+            title_frame,
+            text="Storage Available: Calculating...",
+            font=("Consolas", 11, "bold"),
+            foreground="blue"
+        )
+        self.storage_label.pack(anchor="center", pady=2)
+
         ttk.Button(
             title_frame,
             text="Need Help Buddy?",
@@ -232,26 +460,59 @@ class RTSPRecorderGUI:
         # --- Direct RTSP Link Entry Section ---
         ttk.Label(
             frame_files,
-            text="Direct RTSP Link:"
+            text="Camera Name + RTSP Link:"
         ).grid(row=2, column=0, sticky="w", pady=5)
 
         self.manual_rtsp = tk.StringVar()
+        self.manual_rtsp_name = tk.StringVar()
+
+        ttk.Entry(
+            frame_files,
+            textvariable=self.manual_rtsp_name,
+            width=20
+        ).grid(row=2, column=1, padx=5, sticky="w")
 
         ttk.Entry(
             frame_files,
             textvariable=self.manual_rtsp,
-            width=70
-        ).grid(row=2, column=1, columnspan=2, padx=5, sticky="ew")
+            width=35
+        ).grid(row=2, column=2, padx=5, sticky="w")
 
         ttk.Button(
             frame_files,
             text="Add RTSP Stream",
             command=self.add_manual_rtsp
-        ).grid(row=2, column=3, padx=10)
+        ).grid(row=2, column=3, padx=5)
 
-        ttk.Label(frame_files, text="Save Recordings To:").grid(row=3, column=0, sticky="w", pady=5)
-        ttk.Entry(frame_files, textvariable=self.save_dir, width=50).grid(row=3, column=1, padx=5)
-        ttk.Button(frame_files, text="Browse", command=self.browse_dir).grid(row=3, column=2)
+        ttk.Label(
+            frame_files,
+            text="Multiple RTSP Links (Required Format: CameraName,RTSP_URL)"
+        ).grid(row=3, column=0, sticky="nw", pady=5)
+
+        self.multi_rtsp_text = tk.Text(
+            frame_files,
+            height=6,
+            width=80
+        )
+
+        self.multi_rtsp_text.grid(
+            row=3,
+            column=1,
+            columnspan=3,
+            sticky="ew",
+            padx=5,
+            pady=5
+        )
+
+        ttk.Button(
+            frame_files,
+            text="Add Multiple RTSP Streams",
+            command=self.add_multiple_rtsp
+        ).grid(row=4, column=1, sticky="w", pady=5)
+
+        ttk.Label(frame_files, text="Save Recordings To:").grid(row=5, column=0, sticky="w", pady=5)
+        ttk.Entry(frame_files, textvariable=self.save_dir, width=50).grid(row=5, column=1, padx=5)
+        ttk.Button(frame_files, text="Browse", command=self.browse_dir).grid(row=5, column=2)
 
         junction_frame = ttk.LabelFrame(
             self.scrollable_frame,
@@ -266,8 +527,24 @@ class RTSPRecorderGUI:
             font=("Arial", 10)
         ).pack(anchor="w")
 
-        self.junction_listbox = tk.Listbox(
+        junction_list_container = tk.Frame(
             junction_frame,
+            bg="#08111f"
+        )
+        junction_list_container.pack(
+            fill="both",
+            expand=True,
+            pady=5
+        )
+
+        junction_scrollbar = ttk.Scrollbar(
+            junction_list_container,
+            orient="vertical"
+        )
+        junction_scrollbar.pack(side="right", fill="y")
+
+        self.junction_listbox = tk.Listbox(
+            junction_list_container,
             selectmode=MULTIPLE,
             height=7,
             bg="#08111f",
@@ -276,9 +553,52 @@ class RTSPRecorderGUI:
             selectforeground="white",
             relief="flat",
             borderwidth=0,
-            font=("Segoe UI", 10)
+            font=("Segoe UI", 10),
+            yscrollcommand=junction_scrollbar.set
         )
-        self.junction_listbox.pack(fill="both", expand=True, pady=5)
+
+        self.junction_listbox.pack(
+            side="left",
+            fill="both",
+            expand=True
+        )
+
+        junction_scrollbar.config(
+            command=self.junction_listbox.yview
+        )
+
+        def junction_mousewheel(event):
+            try:
+                if sys.platform == 'darwin':
+                    self.junction_listbox.yview_scroll(
+                        int(-1 * event.delta),
+                        "units"
+                    )
+                else:
+                    self.junction_listbox.yview_scroll(
+                        int(-1 * (event.delta / 120)),
+                        "units"
+                    )
+
+                return "break"
+
+            except Exception:
+                return "break"
+
+        self.junction_listbox.bind(
+            "<MouseWheel>",
+            junction_mousewheel
+        )
+
+        self.junction_listbox.bind(
+            "<Button-4>",
+            lambda e: self.junction_listbox.yview_scroll(-3, "units")
+        )
+
+        self.junction_listbox.bind(
+            "<Button-5>",
+            lambda e: self.junction_listbox.yview_scroll(3, "units")
+        )
 
         preview_frame = ttk.Frame(junction_frame)
         preview_frame.pack(fill="x", pady=5)
@@ -365,6 +685,20 @@ class RTSPRecorderGUI:
             font=("Arial", 10, "bold")
         )
         self.timer_label.grid(row=1, column=0, columnspan=2, pady=10, sticky="w")
+        self.finish_time_label = ttk.Label(
+            frame_time,
+            text="Expected Finish Time: --:--:--",
+            font=("Arial", 10, "bold"),
+            foreground="blue"
+        )
+
+        self.finish_time_label.grid(
+            row=2,
+            column=0,
+            columnspan=3,
+            pady=5,
+            sticky="w"
+        )
 
         self.progress = Progressbar(
             frame_time,
@@ -422,6 +756,44 @@ class RTSPRecorderGUI:
             command=self.stop_all
         )
         self.btn_stop.pack(side="right", padx=5)
+
+        auto_frame = ttk.LabelFrame(self.scrollable_frame, text="Automatic Daily Recording Mode", padding=10)
+        auto_frame.pack(fill="x", padx=10, pady=5)
+
+        ttk.Label(
+            auto_frame,
+            text="Daily Auto Recording Time (24 Hour Format HH:MM):"
+        ).grid(row=0, column=0, sticky="w")
+
+        ttk.Entry(
+            auto_frame,
+            textvariable=self.auto_record_time,
+            width=12
+        ).grid(row=0, column=1, padx=5, sticky="w")
+
+        ttk.Button(
+            auto_frame,
+            text="Enable Auto Mode",
+            command=self.enable_auto_mode
+        ).grid(row=0, column=2, padx=5)
+
+        ttk.Button(
+            auto_frame,
+            text="Disable Auto Mode",
+            command=self.disable_auto_mode
+        ).grid(row=0, column=3, padx=5)
+
+        ttk.Button(
+            auto_frame,
+            text="Run Auto Mode Test",
+            command=self.run_auto_mode_test
+        ).grid(row=0, column=4, padx=5)
+
+        ttk.Label(
+            auto_frame,
+            text="Auto mode records one random active traffic camera daily for 30 minutes and sends notification when ready.",
+            font=("Arial", 9)
+        ).grid(row=1, column=0, columnspan=5, sticky="w", pady=5)
 
         # =========================
         # LOGS + RECENT RECORDINGS
@@ -550,6 +922,45 @@ class RTSPRecorderGUI:
             pass
 
         self.root.after(1000, self.update_live_clock)
+
+    def update_storage_info(self):
+        try:
+            save_path = self.save_dir.get()
+
+            if not os.path.exists(save_path):
+                save_path = os.path.expanduser("~/Desktop")
+
+            usage = shutil.disk_usage(save_path)
+
+            free_gb = usage.free / (1024 ** 3)
+            total_gb = usage.total / (1024 ** 3)
+            used_gb = (usage.total - usage.free) / (1024 ** 3)
+
+            text = (
+                f"Storage Available: {free_gb:.1f} GB | "
+                f"Used: {used_gb:.1f} GB | "
+                f"Total: {total_gb:.1f} GB"
+            )
+
+            if self.storage_label:
+                self.storage_label.config(text=text)
+
+                if free_gb < 20:
+                    self.storage_label.config(foreground="red")
+                elif free_gb < 50:
+                    self.storage_label.config(foreground="orange")
+                else:
+                    self.storage_label.config(foreground="green")
+
+            if free_gb < 10:
+                self.log(
+                    "[WARNING] Low disk space detected. Less than 10 GB remaining."
+                )
+
+        except Exception:
+            pass
+
+        self.root.after(10000, self.update_storage_info)
 
     def show_help_guide(self):
         help_text = """
@@ -721,6 +1132,83 @@ BUILT FOR:
 
         except Exception as e:
             self.log(f"[ERROR] Failed opening recording: {e}")
+
+    def fix_selected_video(self):
+        try:
+            selected = self.recent_recordings_list.curselection()
+
+            if not selected:
+                messagebox.showwarning(
+                    "No Video Selected",
+                    "Please select a video first."
+                )
+                return
+
+            filename = self.recent_recordings_list.get(selected[0])
+
+            original_file = os.path.join(
+                self.save_dir.get(),
+                filename
+            )
+
+            if not os.path.exists(original_file):
+                self.log(
+                    f"[FIX VIDEO ERROR] File not found: {filename}"
+                )
+                return
+
+            fixed_file = os.path.splitext(original_file)[0] + "_FIXED.mp4"
+
+            self.log(
+                f"[FIX VIDEO] Starting repair process for: {filename}"
+            )
+
+            repair_cmd = [
+                self.ffmpeg_path,
+                "-y",
+                "-err_detect",
+                "ignore_err",
+                "-i",
+                original_file,
+                "-c:v",
+                "libx264",
+                "-preset",
+                "fast",
+                "-pix_fmt",
+                "yuv420p",
+                "-movflags",
+                "+faststart",
+                "-c:a",
+                "aac",
+                fixed_file
+            ]
+
+            subprocess.run(
+                repair_cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=300
+            )
+
+            if os.path.exists(fixed_file):
+                self.log(
+                    f"[FIX VIDEO] Video repaired successfully: {os.path.basename(fixed_file)}"
+                )
+
+                self.refresh_recent_recordings()
+
+                messagebox.showinfo(
+                    "Video Repair Completed",
+                    f"Fixed video created successfully:\n\n{os.path.basename(fixed_file)}"
+                )
+
+            else:
+                self.log(
+                    "[FIX VIDEO ERROR] FFmpeg failed to generate repaired video."
+                )
+
+        except Exception as e:
+            self.log(f"[FIX VIDEO ERROR] {e}")
     def save_recent_rtsp(self, name, rtsp):
         try:
             recent_data = []
@@ -743,7 +1231,76 @@ BUILT FOR:
             self.log(f"[ERROR] Failed saving recent RTSP: {e}")
 
 
+    def get_drive_service(self):
+        SCOPES = ['https://www.googleapis.com/auth/drive.file']
 
+        creds = None
+
+        if os.path.exists('token.pickle'):
+            with open('token.pickle', 'rb') as token:
+                creds = pickle.load(token)
+
+        if not creds or not creds.valid:
+
+            if creds and creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+
+            else:
+                flow = InstalledAppFlow.from_client_secrets_file(
+                    'credentials.json',
+                    SCOPES
+                )
+
+                creds = flow.run_local_server(port=0)
+
+            with open('token.pickle', 'wb') as token:
+                pickle.dump(creds, token)
+
+        service = build('drive', 'v3', credentials=creds)
+
+        return service
+    def upload_to_google_drive(self, file_path):
+        try:
+            service = self.get_drive_service()
+
+            filename = os.path.basename(file_path)
+
+            file_metadata = {
+                'name': filename,
+                'parents': [self.google_drive_folder_id]
+            }
+
+            media = MediaFileUpload(
+                file_path,
+                resumable=True
+            )
+
+            file = service.files().create(
+                body=file_metadata,
+                media_body=media,
+                fields='id'
+            ).execute()
+
+            file_id = file.get('id')
+
+            # Make public
+            service.permissions().create(
+                fileId=file_id,
+                body={'type': 'anyone', 'role': 'reader'}
+            ).execute()
+
+            shareable_link = f"https://drive.google.com/file/d/{file_id}/view"
+
+            self.log(
+                f"[UPLOAD] Google Drive upload successful: {filename}"
+            )
+
+            return shareable_link
+
+        except Exception as e:
+            self.log(f"[UPLOAD ERROR] {e}")
+            return None
+    
     def open_live_preview(self):
         try:
             selected_indices = self.junction_listbox.curselection()
@@ -759,16 +1316,25 @@ BUILT FOR:
 
             rtsp_link = selected_camera["rtsp"]
 
-            ffplay_path = self.ffplay_path
+            ffplay_path = shutil.which("ffplay")
 
+            if not ffplay_path and sys.platform == "darwin":
+                ffplay_path = "/opt/homebrew/bin/ffplay"
+
+            if not ffplay_path:
+                ffplay_path = self.ffmpeg_path.replace("ffmpeg.exe", "ffplay.exe")
+
+            if not os.path.exists(ffplay_path):
+                raise FileNotFoundError(
+                    f"FFplay not found: {ffplay_path}"
+                )
             preview_cmd = [
                 ffplay_path,
                 "-rtsp_transport",
                 self.transport.get(),
-                "-hide_banner",
-                "-nostats",
-                "-loglevel",
-                "panic",
+                # "-hide_banner",
+                # "-loglevel",
+                # "quiet",
                 "-fflags",
                 "nobuffer+discardcorrupt",
                 "-flags",
@@ -782,10 +1348,20 @@ BUILT FOR:
                 rtsp_link
             ]
 
+            self.log(f"[PREVIEW] Using ffplay: {ffplay_path}")
+            self.log(f"[PREVIEW] Opening stream: {rtsp_link}")
+
             self.preview_process = subprocess.Popen(
                 preview_cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+            self.root.after(
+                3000,
+                lambda: self.log(
+                    f"[PREVIEW STATUS] Process running: {self.preview_process.poll() is None}"
+                )
             )
             self.preview_paused = False
 
@@ -864,10 +1440,14 @@ BUILT FOR:
                 self.progress['value'] = 100
 
                 self.log(
-                    "[SYSTEM] Recording timer reached configured duration limit."
-                )       
-
-                self.stop_all()
+                    "[SYSTEM] Recording duration reached. Waiting for FFmpeg to finish naturally..."
+                )
+                self.finish_time_label.config(
+                    text="Expected Finish Time: Finalizing MP4..."
+                )
+                
+                # FIX: Stop the recording and kill the loop
+                self.root.after(0, self.stop_all)
                 break
 
             hours = remaining // 3600
@@ -876,6 +1456,13 @@ BUILT FOR:
 
             self.timer_label.config(
                 text=f"Remaining Time: {hours:02}:{minutes:02}:{seconds:02}"
+            )
+            finish_time_text = datetime.fromtimestamp(
+                self.recording_end_time
+            ).strftime("%I:%M:%S %p")
+
+            self.finish_time_label.config(
+                text=f"Expected Finish Time: {finish_time_text}"
             )
 
             elapsed = self.recording_duration_seconds - remaining
@@ -973,7 +1560,15 @@ BUILT FOR:
             )
             return
 
-        junction_name = f"Manual_RTSP_{len(self.all_junctions) + 1}"
+        custom_name = self.manual_rtsp_name.get().strip()
+
+        if not custom_name:
+            messagebox.showwarning(
+                "Camera Name Required",
+                "Please enter a camera name before adding the RTSP stream."
+            )
+            return
+        junction_name = custom_name
 
         self.all_junctions.append({
             "name": junction_name,
@@ -989,10 +1584,433 @@ BUILT FOR:
         )
 
         self.manual_rtsp.set("")
+        self.manual_rtsp_name.set("")
 
+
+    def add_multiple_rtsp(self):
+
+        try:
+
+            lines = self.multi_rtsp_text.get(
+                "1.0",
+                tk.END
+            ).strip().splitlines()
+
+            count = 0
+
+            for line in lines:
+
+                line = line.strip()
+
+                if not line or "," not in line:
+                    continue
+
+                name, rtsp = line.split(",", 1)
+                if not name.strip():
+
+                    self.log(
+                        f"[WARNING] Skipping RTSP entry without camera name: {line}"
+                    )
+
+                    continue
+
+                self.all_junctions.append({
+                    "name": name.strip(),
+                    "rtsp": rtsp.strip()
+                })
+
+                self.junction_listbox.insert(
+                    tk.END,
+                    name.strip()
+                )
+
+                self.save_recent_rtsp(
+                    name.strip(),
+                    rtsp.strip()
+                )
+
+                count += 1
+
+            self.multi_rtsp_text.delete(
+                "1.0",
+                tk.END
+            )
+
+            self.log(
+                f"[SYSTEM] Added {count} RTSP streams successfully."
+            )
+
+        except Exception as e:
+
+            self.log(
+                f"[ERROR] Failed adding multiple RTSP streams: {e}"
+            )
     def browse_dir(self):
         path = filedialog.askdirectory()
         if path: self.save_dir.set(path)
+
+    def enable_auto_mode(self):
+        if self.auto_mode_enabled:
+            self.log("[AUTO MODE] Automatic recording mode already enabled.")
+            return
+
+        self.auto_mode_enabled = True
+
+        self.log(
+            f"[AUTO MODE] Automatic daily recording enabled at {self.auto_record_time.get()}"
+        )
+
+        threading.Thread(
+            target=self.auto_mode_scheduler,
+            daemon=True
+        ).start()
+
+    def disable_auto_mode(self):
+        self.auto_mode_enabled = False
+
+        self.log(
+            "[AUTO MODE] Automatic daily recording disabled."
+        )
+
+    def run_auto_mode_test(self):
+        try:
+            self.auto_test_mode = True
+
+            self.log(
+                "[AUTO MODE TEST] Starting complete automatic workflow test..."
+            )
+
+            self.log(
+                "[AUTO MODE TEST] Test recording duration set to 10 seconds."
+            )
+
+            threading.Thread(
+                target=self.start_auto_recording,
+                daemon=True
+            ).start()
+
+        except Exception as e:
+            self.log(f"[AUTO MODE TEST ERROR] {e}")
+
+    def auto_mode_scheduler(self):
+        while self.auto_mode_enabled:
+            try:
+                current_time = datetime.now().strftime("%H:%M")
+                current_date = datetime.now().strftime("%Y-%m-%d")
+
+                if (
+                    current_time == self.auto_record_time.get()
+                    and self.auto_last_run_date != current_date
+                ):
+                    self.auto_last_run_date = current_date
+
+                    self.log(
+                        "[AUTO MODE] Scheduled automatic recording triggered."
+                    )
+
+                    threading.Thread(
+                        target=self.start_auto_recording,
+                        daemon=True
+                    ).start()
+
+                time.sleep(20)
+
+            except Exception as e:
+                self.log(f"[AUTO MODE ERROR] {e}")
+                time.sleep(20)
+
+    def load_camera_history(self):
+        try:
+            if os.path.exists(self.camera_history_file):
+                with open(self.camera_history_file, 'r') as f:
+                    return json.load(f)
+        except Exception:
+            pass
+
+        return {}
+
+    def save_camera_history(self, history_data):
+        try:
+            with open(self.camera_history_file, 'w') as f:
+                json.dump(history_data, f, indent=4)
+        except Exception as e:
+            self.log(f"[AUTO MODE ERROR] Failed saving camera history: {e}")
+
+    def ping_camera(self, rtsp_link):
+        try:
+            cmd = [
+                self.ffmpeg_path,
+                "-rtsp_transport",
+                self.transport.get(),
+                "-i",
+                rtsp_link,
+                "-t",
+                "5",
+                "-f",
+                "null",
+                "-"
+            ]
+
+            result = subprocess.run(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=15
+            )
+
+            return result.returncode == 0
+
+        except Exception:
+            return False
+
+    def start_auto_recording(self):
+        try:
+            if not self.all_junctions:
+                self.log("[AUTO MODE] No cameras loaded for automatic recording.")
+                return
+
+            history_data = self.load_camera_history()
+
+            today = datetime.now()
+            one_week_ago = today - timedelta(days=7)
+
+            available_cameras = []
+
+            for camera in self.all_junctions:
+                camera_name = camera['name']
+
+                if camera_name in history_data:
+                    try:
+                        last_used = datetime.strptime(
+                            history_data[camera_name],
+                            "%Y-%m-%d"
+                        )
+
+                        if last_used >= one_week_ago:
+                            continue
+
+                    except Exception:
+                        pass
+
+                available_cameras.append(camera)
+
+            if not available_cameras:
+                available_cameras = self.all_junctions
+
+            random.shuffle(available_cameras)
+
+            selected_camera = None
+
+            self.log("[AUTO MODE] Checking camera availability...")
+
+            for camera in available_cameras:
+                self.log(
+                    f"[AUTO MODE] Pinging camera: {camera['name']}"
+                )
+
+                if self.ping_camera(camera['rtsp']):
+                    selected_camera = camera
+                    break
+
+            if not selected_camera:
+                self.log("[AUTO MODE] No active cameras found.")
+                return
+
+            history_data[selected_camera['name']] = today.strftime("%Y-%m-%d")
+            self.save_camera_history(history_data)
+
+            self.log(
+                f"[AUTO MODE] Selected camera: {selected_camera['name']}"
+            )
+
+            save_directory = self.save_dir.get()
+            os.makedirs(save_directory, exist_ok=True)
+
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+
+            auto_duration = 1800
+            duration_label = "30MIN"
+
+            if hasattr(self, 'auto_test_mode') and self.auto_test_mode:
+                auto_duration = 10
+                duration_label = "10SEC_TEST"
+
+            filename = os.path.join(
+                save_directory,
+                f"AUTO_{selected_camera['name'].replace(' ', '_')}_{duration_label}_{timestamp}.ts"
+            )
+
+            cmd = [
+                self.ffmpeg_path,
+                "-y",
+                "-rtsp_transport",
+                self.transport.get(),
+                "-i",
+                selected_camera['rtsp'],
+                "-t",
+                str(auto_duration),
+                "-c:v",
+                "copy",
+                "-an",
+                "-f",
+                "mpegts",
+                filename
+            ]
+
+            self.log(
+                f"[AUTO MODE] Starting automatic recording ({duration_label}): {os.path.basename(filename)}"
+            )
+
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+
+            process.wait()
+            mp4_filename = filename.replace('.ts', '.mp4')
+
+            convert_cmd = [
+                self.ffmpeg_path,
+                "-y",
+                "-i",
+                filename,
+                "-c:v",
+                "libx264",
+                "-preset",
+                "fast",
+                "-pix_fmt",
+                "yuv420p",
+                "-movflags",
+                "+faststart",
+                mp4_filename
+            ]
+
+            self.log(
+                f"[AUTO MODE] Finalizing MP4 video: {os.path.basename(mp4_filename)}"
+            )
+
+            subprocess.run(
+                convert_cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=300
+            )
+
+            if os.path.exists(mp4_filename):
+                try:
+                    os.remove(filename)
+                except Exception:
+                    pass
+
+                filename = mp4_filename
+
+            if hasattr(self, 'auto_test_mode'):
+                self.auto_test_mode = False
+
+            self.log(
+                f"[AUTO MODE] Automatic recording completed successfully ({duration_label}): {os.path.basename(filename)}"
+            )
+
+            self.refresh_recent_recordings()
+
+            # Wait until MP4 is completely finalized before upload
+            self.wait_for_video_ready(filename)
+
+            self.send_recording_notification(filename)
+
+        except Exception as e:
+            self.log(f"[AUTO MODE ERROR] {e}")
+
+    
+
+    def send_email_notification(self, filename, drive_link):
+        try:
+            subject = f"Traffic Recording Ready - {filename}"
+
+            body = f"""
+Hello,
+
+Your automatic traffic recording is ready.
+
+Video File:
+{filename}
+
+Google Drive Folder:
+{drive_link}
+
+Please open the folder and access the uploaded recording.
+
+Regards,
+Smart Traffic Recorder
+            """
+
+            with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
+                smtp.login(
+                    self.gmail_sender,
+                    self.gmail_app_password
+                )
+
+                for recipient in self.notification_emails:
+                    try:
+                        msg = EmailMessage()
+
+                        msg['Subject'] = subject
+                        msg['From'] = self.gmail_sender
+                        msg['To'] = recipient
+
+                        msg.set_content(body)
+
+                        smtp.send_message(msg)
+
+                        self.log(
+                            f"[EMAIL] Notification sent successfully to {recipient}"
+                        )
+
+                    except Exception as email_error:
+                        self.log(
+                            f"[EMAIL ERROR] Failed sending to {recipient}: {email_error}"
+                        )
+
+        except Exception as e:
+            self.log(f"[EMAIL ERROR] {e}")
+
+    def send_recording_notification(self, video_path):
+        try:
+            filename = os.path.basename(video_path)
+
+            self.log(
+                f"[AUTO MODE] Uploading video to Google Drive..."
+            )
+            self.log(
+                f"[UPLOAD] Preparing finalized MP4 for cloud upload..."
+            )
+
+            drive_link = self.upload_to_google_drive(video_path)
+
+            if drive_link:
+                self.send_email_notification(
+                    filename,
+                    drive_link
+                )
+
+                self.log(
+                    "[AUTO MODE] Email notification completed successfully."
+                )
+
+                messagebox.showinfo(
+                    "Automatic Recording Completed",
+                    f"Video uploaded successfully:\n\n{filename}"
+                )
+
+            else:
+                self.log(
+                    "[AUTO MODE ERROR] Google Drive upload failed."
+                )
+
+        except Exception as e:
+            self.log(f"[AUTO MODE ERROR] Notification failed: {e}")
 
     def start_scheduled_thread(self):
         if self.is_recording: return
@@ -1067,7 +2085,7 @@ BUILT FOR:
                 )
             except Exception:
                 pass
-
+    
     def start_recordings(self):
         self.is_recording = True
         self.log("[SYSTEM] Parsing RTSP CSV coordinates...")
@@ -1078,7 +2096,18 @@ BUILT FOR:
             self.duration.get()
         )
 
-        self.recording_end_time = time.time() + self.recording_duration_seconds
+        # Initialize recording end time before using it
+        self.recording_end_time = (
+            time.time() + self.recording_duration_seconds
+        )
+
+        finish_time_text = datetime.fromtimestamp(
+            self.recording_end_time
+        ).strftime("%I:%M:%S %p")
+
+        self.finish_time_label.config(
+            text=f"Expected Finish Time: {finish_time_text}"
+        )
 
         self.progress['value'] = 0
         try:
@@ -1105,73 +2134,57 @@ BUILT FOR:
         save_directory = self.save_dir.get()
         os.makedirs(save_directory, exist_ok=True)
 
+        try:
+            usage = shutil.disk_usage(save_directory)
+            free_gb = usage.free / (1024 ** 3)
+
+            estimated_required_gb = max(len(links) * 1.5, 2)
+
+            if free_gb < estimated_required_gb:
+                messagebox.showerror(
+                    "Insufficient Storage",
+                    f"Available: {free_gb:.1f} GB\nRequired: ~{estimated_required_gb:.1f} GB\n\nPlease free disk space before recording."
+                )
+
+                self.log(
+                    f"[ERROR] Recording blocked due to insufficient storage. Available {free_gb:.1f} GB"
+                )
+
+                self.is_recording = False
+                return
+
+        except Exception as e:
+            self.log(f"[WARNING] Storage check failed: {e}")
+
         for i, camera_data in enumerate(links, 1):
-            junction_name = str(camera_data["name"])
-
-            # Windows-safe filename cleanup
-            invalid_chars = ['<', '>', ':', '"', '/', '\\', '|', '?', '*']
-
-            for char in invalid_chars:
-                junction_name = junction_name.replace(char, '_')
-
-            junction_name = junction_name.replace(' ', '_')
+            junction_name = camera_data["name"].replace(" ", "_")
             self.log(
                 f"[STREAM] Fetching stream connection for: {junction_name}"
             )
             link = camera_data["rtsp"]
-            # Clean malformed RTSP links from accidental whitespace/newlines
-            link = str(link).strip()
-
-            if not link.lower().startswith("rtsp://"):
-                self.log(f"[ERROR] Invalid RTSP URL detected for {junction_name}")
-                continue
 
             filename = os.path.join(
                 save_directory,
-                f"{junction_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4"
+                f"{junction_name}_{self.duration.get().replace(':', '-')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4"
             )
             self.active_files.append(filename)
             self.log(
-             f"[STREAM] Output file prepared: {os.path.basename(filename)}"
+                f"[STREAM] Output file prepared: {os.path.basename(filename)}"
             )
 
             cmd = [
                 self.ffmpeg_path,
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-rtsp_transport",
-                self.transport.get(),
-                "-stimeout",
-                "10000000",
                 "-y",
-                "-i",
-                link,
-                "-t",
-                str(self.recording_duration_seconds)
-            ]
-
-            if self.codec.get() == "copy":
-                cmd.extend([
-                    "-c:v",
-                    "copy"
-                ])
-            else:
-                cmd.extend([
-                    "-c:v",
-                    self.codec.get(),
-                    "-b:v",
-                    self.bitrate.get()
-                ])
-
-            cmd.extend([
+                "-rtsp_transport", "tcp",
+                "-use_wallclock_as_timestamps", "1",
+                "-fflags", "+genpts",
+                "-i", link,
+                "-t", str(self.recording_duration_seconds),
+                "-c:v", "copy",
                 "-an",
-                "-movflags",
-                "+faststart",
-                "-avoid_negative_ts",
-                "make_zero",
+                "-movflags", "+faststart",
                 filename
-            ])
+            ]
 
             try:
                 if self.is_windows:
@@ -1179,25 +2192,24 @@ BUILT FOR:
                         cmd,
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.PIPE,
-                        stdin=subprocess.DEVNULL,
-                        creationflags=subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
+                        stdin=subprocess.PIPE,  # Only one stdin!
+                        text=True,
+                        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
                     )
                 else:
                     process = subprocess.Popen(
                         cmd,
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.PIPE,
+                        stdin=subprocess.PIPE,  # Ensure Mac/Linux uses PIPE too
                         text=True,
                         preexec_fn=os.setsid
                     )
                 self.processes.append(process)
-                time.sleep(2)
+                time.sleep(1)
 
                 if process.poll() is not None:
-                    try:
-                        error_output = process.stderr.read().decode(errors='ignore')
-                    except Exception:
-                        error_output = str(process.stderr.read())
+                    error_output = process.stderr.read()
 
                     self.log(
                         f"[FFMPEG ERROR] {junction_name}: {error_output}"
@@ -1224,30 +2236,59 @@ BUILT FOR:
 
         self.is_recording = False
 
+        completed_files = list(self.active_files)
+
         for p in self.processes:
             try:
-               if p.poll() is None:
+                if p.poll() is None:
 
-                if self.is_windows:
-                    p.terminate()
-                    time.sleep(2)
+                    self.log(
+                        f"[SYSTEM] Gracefully stopping FFmpeg PID {p.pid}..."
+                    )
 
-                else:
                     try:
-                        os.killpg(
-                            os.getpgid(p.pid),
-                            signal.SIGTERM
-                        )
-                    except Exception:
-                        p.terminate()
-                        time.sleep(2)
+                        if p.stdin:
+                            p.stdin.write('q\n')
+                            p.stdin.flush()
+                    except Exception as e:
+                        self.log(f"[WARNING] Could not send shutdown signal: {e}")
 
-                p.wait(timeout=5)
+                    try:
+                        p.wait(timeout=20)
+                    except subprocess.TimeoutExpired:
+
+                        self.log(
+                            "[WARNING] FFmpeg did not exit gracefully. Sending SIGTERM..."
+                        )
+
+                        try:
+                            if self.is_windows:
+                                p.terminate()
+                            else:
+                                os.killpg(os.getpgid(p.pid), signal.SIGTERM)
+                        except Exception:
+                            p.terminate()
+
+                        try:
+                            p.wait(timeout=10)
+                        except subprocess.TimeoutExpired:
+
+                            self.log(
+                                "[WARNING] FFmpeg still running. Force killing process..."
+                            )
+
+                            try:
+                                if self.is_windows:
+                                    p.kill()
+                                else:
+                                    os.killpg(os.getpgid(p.pid), signal.SIGKILL)
+                            except Exception:
+                                p.kill()
 
             except Exception as e:
                 self.log(
-                f"[WARNING] Failed stopping process: {e}"
-            )
+                    f"[WARNING] Failed stopping process: {e}"
+                )
 
         self.processes.clear()
         self.active_files.clear()
@@ -1259,20 +2300,38 @@ BUILT FOR:
             text="Remaining Time: --:--:--"
         )
 
+        self.finish_time_label.config(
+            text="Expected Finish Time: --:--:--"
+        )
+
         self.progress['value'] = 0
         self.recording_end_time = None
 
         self.log(
-            "[SYSTEM] Refreshing recently recorded videos list..."
+            "[SYSTEM] Waiting for MP4 finalization..."
         )
+
+        for mp4_file in completed_files:
+            try:
+                if not os.path.exists(mp4_file):
+                    continue
+
+                self.wait_for_video_ready(mp4_file)
+
+                self.log(
+                    f"[SYSTEM] Recording completed successfully: {os.path.basename(mp4_file)}"
+                )
+
+            except Exception as e:
+                self.log(
+                    f"[WARNING] Failed finalizing recording: {e}"
+                )
 
         self.refresh_recent_recordings()
 
         self.log(
             "[SYSTEM] Recording processes terminated successfully."
         )
-
-
 if __name__ == "__main__":
     root = tk.Tk()
     app = RTSPRecorderGUI(root)
