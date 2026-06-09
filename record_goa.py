@@ -164,7 +164,11 @@ class RTSPRecorderGUI:
             bundled_ffmpeg = self.resource_path('ffmpeg.exe')
             self.ffmpeg_path = bundled_ffmpeg if os.path.exists(bundled_ffmpeg) else 'ffmpeg'
         else:
-            self.ffmpeg_path = shutil.which('ffmpeg') or 'ffmpeg'
+            self.ffmpeg_path = (
+                shutil.which("ffmpeg")
+                or "/opt/homebrew/bin/ffmpeg"
+                or "/usr/local/bin/ffmpeg"
+            )
 
         self.config_file = os.path.join(user_data_path, 'recent_rtsp.json')
         self.camera_history_file = os.path.join(user_data_path, 'camera_history.json')
@@ -337,9 +341,27 @@ class RTSPRecorderGUI:
         # 2. Check system PATH
         # --------------------------------
 
-        ffmpeg_found = shutil.which("ffmpeg")
-        ffprobe_found = shutil.which("ffprobe")
-        ffplay_found = shutil.which("ffplay")
+        possible_ffmpeg = [
+            "/opt/homebrew/bin/ffmpeg",
+            "/usr/local/bin/ffmpeg",
+            shutil.which("ffmpeg")
+        ]
+
+        possible_ffprobe = [
+            "/opt/homebrew/bin/ffprobe",
+            "/usr/local/bin/ffprobe",
+            shutil.which("ffprobe")
+        ]
+
+        possible_ffplay = [
+            "/opt/homebrew/bin/ffplay",
+            "/usr/local/bin/ffplay",
+            shutil.which("ffplay")
+        ]
+
+        ffmpeg_found = next((p for p in possible_ffmpeg if p and os.path.exists(p)), None)
+        ffprobe_found = next((p for p in possible_ffprobe if p and os.path.exists(p)), None)
+        ffplay_found = next((p for p in possible_ffplay if p and os.path.exists(p)), None)
 
         if ffmpeg_found and ffprobe_found:
             self.ffmpeg_path = ffmpeg_found
