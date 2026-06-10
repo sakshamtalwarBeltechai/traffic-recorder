@@ -203,7 +203,7 @@ class RTSPRecorderGUI:
         self.root.geometry("1600x1020")
         self.root.minsize(1350, 850)
         
-        try:
+        try: 
             if self.is_windows:
                 
                 self.root.iconbitmap(self.resource_path("icon.ico"))
@@ -840,6 +840,20 @@ class RTSPRecorderGUI:
             text="Open Live Preview",
             command=self.open_live_preview
         ).pack(side="left", padx=5)
+
+        ttk.Button(
+            preview_frame,
+            text="Check Camera Status",
+            command=self.check_selected_camera_status
+        ).pack(side="left", padx=5)
+
+        self.camera_status_label = ttk.Label(
+            preview_frame,
+            text="Status: Ready",
+            width=50,
+            anchor="w"
+        )
+        self.camera_status_label.pack(side="left", padx=10)
 
         frame_time = ttk.LabelFrame(self.scrollable_frame, text="Recording Schedule", padding=10)
         frame_time.pack(fill="x", padx=10, pady=5)
@@ -2082,6 +2096,83 @@ BUILT FOR:
 
         except Exception:
             return False
+
+    def check_selected_camera_status(self):
+        self.camera_status_label.config(
+            text="Status: Checking selected camera..."
+        )
+
+        threading.Thread(
+            target=self._check_selected_camera_status_thread,
+            daemon=True
+        ).start()
+
+    def _check_selected_camera_status_thread(self):
+        try:
+            selected = self.junction_listbox.curselection()
+
+            if not selected:
+                self.root.after(
+                    0,
+                    lambda: self.camera_status_label.config(
+                        text="Status: No Camera Selected"
+                    )
+                )
+                return
+
+            total = len(selected)
+            online_count = 0
+            offline_count = 0
+            online_cameras = []
+            offline_cameras = []
+
+            for current_index, idx in enumerate(selected, start=1):
+                camera = self.all_junctions[idx]
+
+                self.root.after(
+                    0,
+                    lambda c=camera, i=current_index, t=total: self.camera_status_label.config(
+                        text=f"Status: Checking {i}/{t} - {c['name']}..."
+                    )
+                )
+
+                online = self.ping_camera(camera['rtsp'])
+
+                if online:
+                    online_count += 1
+                    online_cameras.append(camera['name'])
+                    self.log(f"[ONLINE] {camera['name']}")
+                else:
+                    offline_count += 1
+                    offline_cameras.append(camera['name'])
+                    self.log(f"[OFFLINE] {camera['name']}")
+
+            self.log("=" * 60)
+            self.log(f"[STATUS SUMMARY] Online Cameras ({online_count})")
+
+            for cam in online_cameras:
+                self.log(f"   🟢 {cam}")
+
+            self.log(f"[STATUS SUMMARY] Offline Cameras ({offline_count})")
+
+            for cam in offline_cameras:
+                self.log(f"   🔴 {cam}")
+
+            self.log("=" * 60)
+
+            summary_text = (
+                f"Online: {online_count} | Offline: {offline_count}"
+            )
+
+            self.root.after(
+                0,
+                lambda: self.camera_status_label.config(
+                    text=summary_text
+                )
+            )
+
+        except Exception as e:
+            self.log(f"[STATUS ERROR] {e}")
 
     def start_auto_recording(self):
         try:
