@@ -28,6 +28,105 @@ import webbrowser
 import urllib.request
 import zipfile
 
+class BoxyEntry(tk.Entry):
+    def __init__(self, master=None, placeholder="", textvariable=None, **kwargs):
+        self.placeholder = placeholder
+        self.tv = textvariable
+        self.is_placeholder_active = False
+        
+        # Modern boxy styling to match your dark theme
+        kwargs['bg'] = "#1e293b"
+        kwargs['fg'] = "white"
+        kwargs['insertbackground'] = "white"
+        kwargs['relief'] = "flat"
+        kwargs['highlightthickness'] = 1
+        kwargs['highlightbackground'] = "#475569"
+        kwargs['highlightcolor'] = "#38bdf8"
+        kwargs['font'] = ("Segoe UI", 10)
+        
+        # Internal variable to separate UI text from your backend logic
+        self._ui_var = tk.StringVar()
+        super().__init__(master, textvariable=self._ui_var, **kwargs)
+        
+        self.bind("<FocusIn>", self._clear_placeholder)
+        self.bind("<FocusOut>", self._add_placeholder)
+        
+        self._ui_var.trace_add("write", self._on_ui_change)
+        
+        if self.tv:
+            self.tv.trace_add("write", self._on_external_change)
+            self._on_external_change()
+        else:
+            self._add_placeholder()
+
+    def _on_ui_change(self, *args):
+        if not self.is_placeholder_active and self.tv:
+            self.tv.set(self._ui_var.get())
+
+    def _on_external_change(self, *args):
+        val = self.tv.get()
+        if val:
+            self.is_placeholder_active = False
+            self._ui_var.set(val)
+            self.config(fg="white")
+        elif self.focus_get() != self:
+            self._add_placeholder()
+
+    def _clear_placeholder(self, e=None):
+        if self.is_placeholder_active:
+            self.is_placeholder_active = False
+            self._ui_var.set("")
+            self.config(fg="white")
+            if self.tv:
+                self._ui_var.set(self.tv.get())
+
+    def _add_placeholder(self, e=None):
+        if not self._ui_var.get():
+            self.is_placeholder_active = True
+            self._ui_var.set(self.placeholder)
+            self.config(fg="#94a3b8")
+
+class BoxyText(tk.Text):
+    def __init__(self, master=None, placeholder="", **kwargs):
+        self.placeholder = placeholder
+        self.is_placeholder_active = False
+        
+        kwargs['bg'] = "#1e293b"
+        kwargs['fg'] = "white"
+        kwargs['insertbackground'] = "white"
+        kwargs['relief'] = "flat"
+        kwargs['highlightthickness'] = 1
+        kwargs['highlightbackground'] = "#475569"
+        kwargs['highlightcolor'] = "#38bdf8"
+        kwargs['font'] = ("Segoe UI", 10)
+        kwargs['padx'] = 8
+        kwargs['pady'] = 8
+        
+        super().__init__(master, **kwargs)
+        
+        self.bind("<FocusIn>", self._clear_placeholder)
+        self.bind("<FocusOut>", self._add_placeholder)
+        
+        self._add_placeholder()
+
+    def _clear_placeholder(self, e=None):
+        if self.is_placeholder_active:
+            self.delete("1.0", tk.END)
+            self.config(fg="white")
+            self.is_placeholder_active = False
+
+    def _add_placeholder(self, e=None):
+        val = super().get("1.0", tk.END).strip()
+        if not val:
+            self.is_placeholder_active = True
+            self.insert("1.0", self.placeholder)
+            self.config(fg="#94a3b8")
+            
+    def get(self, index1, index2=None):
+        if self.is_placeholder_active:
+            return ""
+        return super().get(index1, index2)
+
 class RTSPRecorderGUI:
     def wait_for_video_ready(self, file_path, timeout=120):
         """
@@ -172,6 +271,7 @@ class RTSPRecorderGUI:
 
         self.config_file = os.path.join(user_data_path, 'recent_rtsp.json')
         self.camera_history_file = os.path.join(user_data_path, 'camera_history.json')
+        self.saved_junctions_file = os.path.join(user_data_path, 'saved_junctions.json')
 
         if self.is_windows and not os.path.exists(self.ffmpeg_path):
             self.ffmpeg_path = 'ffmpeg'
@@ -182,6 +282,7 @@ class RTSPRecorderGUI:
         self.show_welcome_screen()
         self.update_live_clock()
         self.update_storage_info()
+        self.load_saved_junctions()
         self.log("[SYSTEM] Smart Traffic Recorder Dashboard initialized successfully.")
         self.log("[SYSTEM] Ready to load RTSP CSV files and start monitoring.")
 
@@ -206,7 +307,7 @@ class RTSPRecorderGUI:
 
         title_label = tk.Label(
             welcome,
-            text="SMART TRAFFIC RECORDER",
+            text="SMART TRAFFIC RECORDER BY BELTECH",
             font=("Segoe UI", 28, "bold"),
             fg="#38bdf8",
             bg="#0f172a"
@@ -578,7 +679,7 @@ class RTSPRecorderGUI:
         frame_files.columnconfigure(2, weight=1)
 
         ttk.Label(frame_files, text="CSV Path:").grid(row=0, column=0, sticky="w")
-        ttk.Entry(frame_files, textvariable=self.csv_path, width=50).grid(row=0, column=1, padx=5)
+        BoxyEntry(frame_files, textvariable=self.csv_path, placeholder="Select where to load CSV files from...", width=50).grid(row=0, column=1, padx=5)
         ttk.Button(frame_files, text="Browse", command=self.browse_csv).grid(row=0, column=2)
 
         ttk.Button(
@@ -596,18 +697,8 @@ class RTSPRecorderGUI:
         self.manual_rtsp = tk.StringVar()
         self.manual_rtsp_name = tk.StringVar()
 
-        ttk.Entry(
-            frame_files,
-            textvariable=self.manual_rtsp_name,
-            width=20
-        ).grid(row=2, column=1, padx=5, sticky="w")
-
-        ttk.Entry(
-            frame_files,
-            textvariable=self.manual_rtsp,
-            width=35
-        ).grid(row=2, column=2, padx=5, sticky="w")
-
+        BoxyEntry(frame_files, textvariable=self.manual_rtsp_name, placeholder="Enter Camera Name", width=20).grid(row=2, column=1, padx=5, sticky="w")
+        BoxyEntry(frame_files, textvariable=self.manual_rtsp, placeholder="Enter RTSP Link", width=35).grid(row=2, column=2, padx=5, sticky="w")
         ttk.Button(
             frame_files,
             text="Add RTSP Stream",
@@ -619,8 +710,9 @@ class RTSPRecorderGUI:
             text="Multiple RTSP Links (Required Format: CameraName,RTSP_URL)"
         ).grid(row=3, column=0, sticky="nw", pady=5)
 
-        self.multi_rtsp_text = tk.Text(
+        self.multi_rtsp_text = BoxyText(
             frame_files,
+            placeholder="MainGate,rtsp://192.168.1.10/stream1\nLobby,rtsp://192.168.1.11/stream2",
             height=6,
             width=80
         )
@@ -641,7 +733,7 @@ class RTSPRecorderGUI:
         ).grid(row=4, column=1, sticky="w", pady=5)
 
         ttk.Label(frame_files, text="Save Recordings To:").grid(row=5, column=0, sticky="w", pady=5)
-        ttk.Entry(frame_files, textvariable=self.save_dir, width=50).grid(row=5, column=1, padx=5)
+        BoxyEntry(frame_files, textvariable=self.save_dir, placeholder="Select output folder...", width=50).grid(row=5, column=1, padx=5)
         ttk.Button(frame_files, text="Browse", command=self.browse_dir).grid(row=5, column=2)
 
         junction_frame = ttk.LabelFrame(
@@ -1339,6 +1431,30 @@ BUILT FOR:
 
         except Exception as e:
             self.log(f"[FIX VIDEO ERROR] {e}")
+
+    def load_saved_junctions(self):
+        try:
+            if os.path.exists(self.saved_junctions_file):
+                with open(self.saved_junctions_file, 'r') as f:
+                    saved_data = json.load(f)
+                
+                if saved_data:
+                    self.all_junctions = saved_data
+                    self.junction_listbox.delete(0, tk.END)
+                    for junction in self.all_junctions:
+                        self.junction_listbox.insert(tk.END, junction['name'])
+                    
+                    self.log(f"[SYSTEM] Automatically loaded {len(self.all_junctions)} saved cameras from previous session.")
+        except Exception as e:
+            self.log(f"[ERROR] Failed to load saved junctions: {e}")
+
+    def save_all_junctions(self):
+        try:
+            with open(self.saved_junctions_file, 'w') as f:
+                json.dump(self.all_junctions, f, indent=4)
+        except Exception as e:
+            self.log(f"[ERROR] Failed to save junctions: {e}")
+
     def save_recent_rtsp(self, name, rtsp):
         try:
             recent_data = []
@@ -1576,7 +1692,6 @@ BUILT FOR:
                     text="Expected Finish Time: Finalizing MP4..."
                 )
                 
-                # FIX: Stop the recording and kill the loop
                 self.root.after(0, self.stop_all)
                 break
 
@@ -1729,6 +1844,7 @@ BUILT FOR:
             self.log(
                 f"[SYSTEM] Loaded {len(self.all_junctions)} traffic junctions successfully."
             )
+            self.save_all_junctions()
 
             if not self.all_junctions:
                 messagebox.showwarning(
@@ -1776,6 +1892,7 @@ BUILT FOR:
         )
 
         self.manual_rtsp.set("")
+        self.save_all_junctions()
         self.manual_rtsp_name.set("")
 
 
@@ -1827,6 +1944,7 @@ BUILT FOR:
                 "1.0",
                 tk.END
             )
+            self.save_all_junctions()
 
             self.log(
                 f"[SYSTEM] Added {count} RTSP streams successfully."
