@@ -199,10 +199,20 @@ class RTSPRecorderGUI:
     def __init__(self, root):
         
         self.root = root
-        self.root.title("FFmpeg RTSP Multi-Recorder")
+        self.root.title("Traffic Stream Recorder")
         self.root.geometry("1600x1020")
         self.root.minsize(1350, 850)
-        # START WITH HIDDEN MAIN WINDOW
+        
+        try:
+            if self.is_windows:
+                
+                self.root.iconbitmap(self.resource_path("icon.ico"))
+            else:
+
+                img = tk.PhotoImage(file=self.resource_path("icon.png"))
+                self.root.iconphoto(True, img)
+        except Exception as e:
+            pass 
         self.root.withdraw()
         self.main_canvas = None
         self.scrollable_frame = None

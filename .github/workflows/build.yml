@@ -27,7 +27,7 @@ jobs:
 
       - name: Build Windows EXE
         run: |
-          pyinstaller --noconfirm --onefile --windowed --add-binary "ffmpeg.exe;." --add-binary "ffprobe.exe;." --add-binary "ffplay.exe;." record_goa.py
+          pyinstaller --noconfirm --onefile --windowed --icon="icon.ico" --add-data "icon.ico;." --add-binary "ffmpeg.exe;." --add-binary "ffprobe.exe;." --add-binary "ffplay.exe;." record_goa.py
       - name: Rename Windows Build
         run: |
           mkdir release
@@ -57,7 +57,7 @@ jobs:
 
       - name: Build macOS App
         run: |
-          pyinstaller --noconfirm --windowed record_goa.py
+          pyinstaller --noconfirm --windowed --icon="icon.icns" --add-data "icon.png:." record_goa.py
 
       - name: Rename macOS Build
         run: |
