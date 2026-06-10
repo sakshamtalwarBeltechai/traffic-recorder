@@ -2485,6 +2485,7 @@ Smart Traffic Recorder
             cmd = [
                 self.ffmpeg_path,
                 "-y",
+                "-loglevel", "error",
                 "-rtsp_transport", "tcp",
                 "-use_wallclock_as_timestamps", "1",
                 "-fflags", "+genpts",
@@ -2492,7 +2493,7 @@ Smart Traffic Recorder
                 "-t", str(self.recording_duration_seconds),
                 "-c:v", "copy",
                 "-an",
-                "-movflags", "+faststart",
+                "-movflags", "frag_keyframe+empty_moov",    
                 filename
             ]
 
